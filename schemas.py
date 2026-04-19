@@ -1,0 +1,24 @@
+from enum import Enum
+
+class MemoryType(Enum):
+    """Classification for how a memory is processed and retrieved."""
+    CONVERSATION = "CONVERSATION"
+    TASK = "TASK"
+    OBSERVATION = "OBSERVATION"
+    USER_PREFERENCE = "USER_PREFERENCE"
+    RUNTIME_ERROR = "RUNTIME_ERROR"
+    CODE_SNIPPET = "CODE_SNIPPET"
+    LEARNING_EVENT = "LEARNING_EVENT"
+    EXPIRED_TASK = "EXPIRED_TASK"
+
+class AssociationType(Enum):
+    """Categorical relationships between two memory nodes."""
+    PRECEDES = "PRECEDES"
+    SUPPORTS = "SUPPORTS"
+    RELATED_TO = "RELATED_TO"
+    DEPENDS_ON = "DEPENDS_ON"
+    FOLLOWS = "FOLLOWS"
+    CAUSES = "CAUSES"
+    CONTRADICTS = "CONTRADICTS"
+    PREREQUISITE_FOR = "PREREQUISITE_FOR"
+    IS_EXAMPLE_OF = "IS_EXAMPLE_OF"

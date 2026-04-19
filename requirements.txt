@@ -1,0 +1,5 @@
+sentence-transformers
+transformers
+sqlite-vec
+pytest
+pytest-mock

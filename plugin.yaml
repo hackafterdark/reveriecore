@@ -1,0 +1,4 @@
+name: reveriecore
+version: "1.0.0"
+description: "Local RAG memory with SQLite-vec and semantic profiling."
+type: memory

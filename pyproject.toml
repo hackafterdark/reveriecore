@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reveriecore"
+version = "1.0.0"
+description = "ReverieCore — Local RAG memory with SQLite-vec, sentiment-based importance scoring, and semantic profiling."
+authors = [
+    { name = "Tom", email = "tom@hackafterdark.com" } # Placeholder, user didn't specify
+]
+requires-python = ">=3.10"
+dependencies = [
+    "sentence-transformers",
+    "transformers",
+    "sqlite-vec",
+    "pydantic", # Added for robust type handling if needed later
+    "torch",
+    "numpy",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-mock",
+]
+
+[project.entry-points."hermes_agent.plugins"]
+reveriecore = "reveriecore"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["reveriecore*"]
