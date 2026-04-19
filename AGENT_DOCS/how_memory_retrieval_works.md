@@ -34,7 +34,24 @@ $$\text{Final Rank} = (W_1 \times \text{Similarity Score}) + (W_2 \times \text{B
 
 - **Weights ($W_1, W_2$):** These allow us to tune whether the agent favors "exact semantic matches" or "important facts."
 
----
+### 📊 Context Hub: Adaptive Memory Budgeting
+
+To prevent long-term memory from consuming the agent's active context window, ReverieCore implements a dynamic budgeting system that listens to signals from Hermes.
+
+#### 1. Usage Zones
+We monitor `remaining_tokens` (provided via `on_turn_start`) to determine how much memory to inject:
+
+| Zone | Condition | Strategy | Output Type |
+| :--- | :--- | :--- | :--- |
+| **Comfort** | >50% Remaining | Balanced | Full Content (Preferred) |
+| **Tight** | 20-50% Remaining | Conservative | Weighted towards Abstracts |
+| **Danger** | <20% Remaining | Critical | Abstracts ONLY |
+
+#### 2. The Fallback Mechanism
+During retrieval, the `Retriever` iterates through the most relevant memories and makes a real-time decision:
+1. **Check Full**: Does `content_full` fit in the remaining budget? If yes, use it.
+2. **Check Abstract**: If full is too large, does the summary/abstract fit? If yes, use the abstract.
+3. **Skip**: If even the abstract doesn't fit, skip this memory to prioritize higher-ranking results.
 
 ### 🚀 Key Takeaway
-Our plugin ensures the Agent doesn't just get *any* memory, but the **most relevant and important** memory for the current situation. By using `sqlite-vec`, we achieve this intelligence with zero external database dependencies.
+Our plugin ensures the Agent doesn't just get *any* memory, but the **most relevant and important** memory for the current situation—while strictly staying within the model's token constraints to avoid performance degradation or forced context compression.

@@ -72,6 +72,14 @@ class ReverieMemoryProvider(MemoryProvider):
         self.workspace = "UNKNOWN_WORKSPACE"
         self.agent_context = "primary"
         
+        # Budget Management
+        # Lower defaults to be safer for local users (~32k context)
+        # We assume 100% available until Hermes sends a signal via on_turn_start
+        self.total_context = 32768
+        self.remaining_tokens = 32768
+        self.memory_char_limit = 2200 # Baseline from config (approx 550 tokens)
+        self.model_name = "unknown"
+        
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
@@ -104,6 +112,11 @@ class ReverieMemoryProvider(MemoryProvider):
             self._db = DatabaseManager(str(db_path))
             self._enrichment = EnrichmentService()
             self._retriever = Retriever(self._db)
+            
+            # Capture memory_char_limit if passed from config
+            if "memory_char_limit" in kwargs:
+                self.memory_char_limit = int(kwargs["memory_char_limit"])
+            
             logger.info(f"ReverieCore initialized for {self.author_id} in {self.owner_id} (Actor: {self.actor_id})")
         except Exception as e:
             logger.error(f"ReverieCore failed to initialize: {e}")
@@ -112,8 +125,48 @@ class ReverieMemoryProvider(MemoryProvider):
         return (
             "# Long-Term Memory (ReverieCore)\n"
             "Active. You have access to a local knowledge base of past interactions.\n"
-            "Use 'reverie_search' to find specific historical context when needed."
+            "Use 'reverie_search' to find specific historical context when needed.\n"
+            "NOTE: Older or less relevant memories may be returned as abstracts (summaries) to save context window space."
         )
+
+    def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
+        """Called by Hermes at the start of each turn with runtime context."""
+        self.remaining_tokens = kwargs.get("remaining_tokens") or self.remaining_tokens
+        
+        model_meta = kwargs.get("model_metadata") or {}
+        if model_meta:
+            self.total_context = model_meta.get("context_length") or self.total_context
+            self.model_name = model_meta.get("model") or self.model_name
+            
+        logger.debug(f"ReverieCore Turn {turn_number}: Remaining Budget: {self.remaining_tokens}/{self.total_context}")
+
+    def _calculate_budget(self) -> int:
+        """
+        Determines the safe token budget for memory injection.
+        
+        Dynamic Zones:
+        - Comfort (>50% remaining): Full allocation (up to memory_char_limit/4 tokens)
+        - Tight (20-50% remaining): Reduced allocation
+        - Danger (<20% remaining): Minimal allocation (Abstracts only)
+        """
+        # Convert char limit to estimated tokens (rough baseline)
+        baseline_tokens = (self.memory_char_limit // 4)
+        
+        remaining_ratio = self.remaining_tokens / self.total_context if self.total_context > 0 else 0.5
+        
+        if remaining_ratio > 0.5:
+            # Comfort Zone
+            target = baseline_tokens
+        elif remaining_ratio > 0.2:
+            # Tight Zone
+            target = int(baseline_tokens * 0.7)
+        else:
+            # Danger Zone
+            target = int(baseline_tokens * 0.4)
+            
+        # Hard Cap: Never claim more than 1/3 of what is physically left
+        # to ensure the current turn has room to complete.
+        return max(100, min(target, self.remaining_tokens // 3))
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Returns the result of the last queued prefetch."""
@@ -134,18 +187,23 @@ class ReverieMemoryProvider(MemoryProvider):
             return
 
         def _run():
-            try:
-                # 1. Embed query
+                # 1. Calculate Budget & Strategy
+                budget = self._calculate_budget()
+                remaining_ratio = self.remaining_tokens / self.total_context if self.total_context > 0 else 0.5
+                strategy = "abstract_only" if remaining_ratio < 0.2 else "balanced"
+                
+                # 2. Embed query
                 vec = self._enrichment.generate_embedding(query)
-                # 2. Search
-                # Scoping: Search current profile's memories or public global memories
+                # 3. Search
                 results = self._retriever.search(
                     vec, 
                     limit=3, 
-                    allowed_owners=[self.owner_id, "PERSONAL_WORKSPACE"] # PERSONAL_WORKSPACE is global fallback
+                    token_budget=budget,
+                    strategy=strategy,
+                    allowed_owners=[self.owner_id, "PERSONAL_WORKSPACE"]
                 )
                 if results:
-                    lines = [f"- {r['content_full']}" for r in results]
+                    lines = [f"- {r['content']}" for r in results]
                     with self._prefetch_lock:
                         self._prefetch_result = "\n".join(lines)
             except Exception as e:
@@ -234,10 +292,17 @@ class ReverieMemoryProvider(MemoryProvider):
                 return tool_error("Missing parameter: query")
                 
             try:
+                # Calculate Budget & Strategy
+                budget = self._calculate_budget()
+                remaining_ratio = self.remaining_tokens / self.total_context if self.total_context > 0 else 0.5
+                strategy = "abstract_only" if remaining_ratio < 0.2 else "balanced"
+                
                 vec = self._enrichment.generate_embedding(query)
                 results = self._retriever.search(
                     vec, 
                     limit=limit,
+                    token_budget=budget,
+                    strategy=strategy,
                     allowed_owners=[self.owner_id, "PERSONAL_WORKSPACE"]
                 )
                 
@@ -245,8 +310,10 @@ class ReverieMemoryProvider(MemoryProvider):
                     return json.dumps({"result": "No relevant memories found."})
                 
                 return json.dumps({
-                    "results": [r['content_full'] for r in results],
-                    "count": len(results)
+                    "results": [r['content'] for r in results],
+                    "count": len(results),
+                    "budget_used": sum(r['tokens'] for r in results),
+                    "strategy": strategy
                 })
             except Exception as e:
                 return tool_error(f"Search failed: {e}")
