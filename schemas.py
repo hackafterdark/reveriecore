@@ -10,6 +10,7 @@ class MemoryType(Enum):
     CODE_SNIPPET = "CODE_SNIPPET"
     LEARNING_EVENT = "LEARNING_EVENT"
     EXPIRED_TASK = "EXPIRED_TASK"
+    ENTITY = "ENTITY"
 
 class AssociationType(Enum):
     """Categorical relationships between two memory nodes."""
@@ -22,3 +23,8 @@ class AssociationType(Enum):
     CONTRADICTS = "CONTRADICTS"
     PREREQUISITE_FOR = "PREREQUISITE_FOR"
     IS_EXAMPLE_OF = "IS_EXAMPLE_OF"
+    FIXES = "FIXES"
+    PART_OF = "PART_OF"
+    IS_A = "IS_A"
+    MENTIONS = "MENTIONS"
+    DEFINES = "DEFINES"

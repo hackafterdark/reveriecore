@@ -1,21 +1,21 @@
-# 🌌 ReverieCore
+# 🌌 Reverie Core
 
 [![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/hackafterdark/reveriecore)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Hermes-purple.svg)](https://github.com/hackafterdark/reveriecore)
 
-**ReverieCore** is an high-performance, intelligence-driven Retrieval-Augmented Generation (RAG) memory engine for the Hermes agent ecosystem. It transforms flat text memories into a structured, semantic knowledge graph.
+**Reverie Core** is an high-performance, intelligence-driven Retrieval-Augmented Generation (RAG) memory engine for the Hermes agent ecosystem. It transforms flat text memories into a structured, semantic knowledge graph.
 
 ---
 
 ## ✨ Key Features
 
-- **🧠 Deep Semantic Enrichment**: Uses `BART-Large-MNLI` for zero-shot classification and semantic importance scoring.
-- **⚡ Vector-First Retrieval**: High-speed similarity search powered by `sqlite-vec`.
-- **📊 Intelligence Re-ranking**: Hybrid ranking logic that combines semantic similarity with calculated importance weights.
-- **🌐 Knowledge Graph (Associations)**: Logical linking of memories (e.g., `CAUSES`, `DEPENDS_ON`) to build cross-contextual understanding.
-- **🛡️ Namespace Isolation**: Robust identity model ensuring data privacy and profile-based sandboxing.
-- **📦 Embedded & Lightweight**: Single-file SQLite persistence with local transformer inference—zero external database dependencies.
+- **🧠 Deep Semantic Enrichment**: Uses `BART-Large-MNLI` for zero-shot classification and importance scoring.
+- **⚡ Hybrid Graph-RAG Retrieval**: Combines `sqlite-vec` similarity search with **Bidirectional Graph Traversal** to find non-obvious context.
+- **🛡️ Hub Protection**: Intelligent per-node limits (10) to prevent popular entities from creating "noise" in your context window.
+- **🌐 Augmented Knowledge**: Automatically extracts canonical entities (Files, Tools, API nodes) and maps their relationships.
+- **🛡️ Namespace Isolation**: Robust identity model ensuring profile-based sandboxing and privacy.
+- **📦 Zero-Config Connectivity**: Dynamically discovers your LLM provider (Llama Swap, Ollama, OpenAI) from the Hermes `config.yaml`.
 
 ---
 
@@ -35,13 +35,12 @@ reveriecore/
 ├── PRD/                 # Product Requirements Document
 ├── tests/               # Unit and integration tests
 ├── database.py          # SQLite & Vector initialization and management
-├── enrichment.py        # LLM-based classification, scoring, and profiling
-├── provider.py          # Hermes Memory Provider interface implementation
+├── enrichment.py        # LLM-based extraction, scoring, and profiling
+├── graph_query.py       # Bidirectional traversal & Hub Protection logic
+├── provider.py          # Hermes Memory Provider implementation
 ├── retrieval.py         # Hybrid search and re-ranking logic
 ├── schemas.py           # Data models, Enums, and type definitions
-├── plugin.yaml          # Plugin metadata and configuration
-├── pyproject.toml       # Build and dependency configuration
-└── requirements.txt     # Python dependencies list
+├── requirements.txt     # Python dependencies list
 ```
 
 ---
@@ -61,20 +60,27 @@ cd reveriecore
 pip install -r requirements.txt
 ```
 
-### 3. Usage
-The plugin is automatically discovered by Hermes. Ensure your `plugin.yaml` points to the correct `provider.py` entry point.
+### 3. Verification
+You can monitor your Knowledge Graph health using the built-in status tool (no Hermes environment required):
+```bash
+python3 tests/graph_status.py
+```
+
+### 4. Configuration
+Reverie Core automatically reads your active LLM provider (base_url, model) from `~/.hermes/config.yaml`. No manual configuration is required unless you want to override the `importance_score` thresholds in `enrichment.py`.
 
 ---
 
 ## 📖 Documentation
 
-For deep dives into the architecture and theory behind ReverieCore, see the [AGENT_DOCS](file:///home/tom/.hermes/plugins/reveriecore/AGENT_DOCS) directory:
+For deep dives into the architecture and theory behind Reverie Core, see the [AGENT_DOCS](AGENT_DOCS) directory:
 
-- [Database Schema](file:///home/tom/.hermes/plugins/reveriecore/AGENT_DOCS/db_schema.md)
-- [Retrieval Workflow](file:///home/tom/.hermes/plugins/reveriecore/AGENT_DOCS/how_memory_retrieval_works.md)
-- [Storage & Enrichment](file:///home/tom/.hermes/plugins/reveriecore/AGENT_DOCS/how_memory_storage_works.md)
-- [Importance Score Mechanics](file:///home/tom/.hermes/plugins/reveriecore/AGENT_DOCS/memory_importance_score.md)
-- [Product Requirements (PRD)](file:///home/tom/.hermes/plugins/reveriecore/PRD/PRD.md)
+- [Database Schema](AGENT_DOCS/db_schema.md)
+- [Retrieval Workflow](AGENT_DOCS/how_memory_retrieval_works.md)
+- [Knowledge Graph Mechanics](AGENT_DOCS/knowledge_graph_mechanics.md)
+- [Storage & Enrichment](AGENT_DOCS/how_memory_storage_works.md)
+- [Importance Score Mechanics](AGENT_DOCS/memory_importance_score.md)
+- [Product Requirements (PRD)](PRD/PRD.md)
 
 ---
 

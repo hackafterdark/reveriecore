@@ -1,4 +1,4 @@
-# Hybrid Recall: How Memory Retrieval Works
+# Hybrid-RAG: How Memory Retrieval Works
 
 Retrieval in the Hermes Memory Plugin is a multi-step process that combines **Semantic Similarity** (Vector Search) with **Intelligence-Based Re-ranking** (Scoring).
 
@@ -27,16 +27,23 @@ Using the `sqlite-vec` extension, we perform a nearest-neighbor search on the `m
   ```
 - This ensures an agent only retrieves memories belonging to its current Profile, or global Public facts.
 
-#### 3. Intelligence-Based Re-ranking (The Filter)
-Similarity isn't everything. A recent memory that is 80% similar might be more valuable than an old memory that is 90% similar. We use the **BART Large MNLI** model to calculate a zero-shot importance score (1.0 to 5.0) which is combined with the similarity score for final ranking:
+#### 3. Graph Augmentation (Graph-RAG)
+Similarity isn't everything. A memory that is semantically similar to your query might be linked to a vital "hidden" fact that doesn't share keywords. 
+- **Bidirectional Traversal**: After finding the top vector candidates (Seeds), we traverse the `memory_associations` table in **both directions** (`Memory <-> Entity <-> Entity <-> Memory`).
+- **Shared Entity Bridging**: This allows us to find Memory B if it shares an entity with Memory A, even if the query only semantically matched Memory A.
+- **Hub Protection**: To prevent popular entities (the "Hub Problem") from flooding results, we strictly limit traversal to the **top 10 associations per node**.
 
-$$\text{Final Rank} = (W_1 \times \text{Similarity Score}) + (W_2 \times \text{BART Importance Score})$$
+#### 4. Intelligence-Based Re-ranking (The Filter)
+Final ranking combines three signals:
+1. **Vector Similarity**: How well the text matches the query.
+2. **BART Importance**: A zero-shot score (1.0 to 5.0) for the fact's objective value.
+3. **Graph Proximity**: A boost for memories discovered via graph links.
 
-- **Weights ($W_1, W_2$):** These allow us to tune whether the agent favors "exact semantic matches" or "important facts."
+$$\text{Final Rank} = (W_1 \times \text{Similarity}) + (W_2 \times \text{Importance}) + \text{Graph Boost}$$
 
 ### 📊 Context Hub: Adaptive Memory Budgeting
 
-To prevent long-term memory from consuming the agent's active context window, ReverieCore implements a dynamic budgeting system that listens to signals from Hermes.
+To prevent long-term memory from consuming the agent's active context window, Reverie Core implements a dynamic budgeting system that listens to signals from Hermes.
 
 #### 1. Usage Zones
 We monitor `remaining_tokens` (provided via `on_turn_start`) to determine how much memory to inject:

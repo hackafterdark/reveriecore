@@ -87,21 +87,50 @@ ORDER BY v.distance;
 
 ---
 
-## 3. `memory_associations` Table (Relationships)
+## 3. `entities` Table (Canonical Knowledge)
 
-Maps the links between memories to create a knowledge graph.
+This table stores canonical entities extracted from memories (files, classes, concepts, tools).
+
+```sql
+CREATE TABLE entities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,       -- Canonical name (e.g. 'database.py')
+    label TEXT NOT NULL,             -- Type (e.g. 'FILE', 'CLASS', 'TOOL')
+    description TEXT,                -- Unified summary from all mentions
+    first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+---
+
+## 4. `memory_associations` Table (Polymorphic Graph)
+
+Maps the links between memories and entities to create a multi-layer knowledge graph for Reverie Core.
 
 ```sql
 CREATE TABLE memory_associations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
     
-    source_memory_id INTEGER NOT NULL,
-    target_memory_id INTEGER NOT NULL,
+    -- SOURCE NODE
+    source_id INTEGER NOT NULL,
+    source_type TEXT NOT NULL,       -- 'MEMORY' or 'ENTITY'
     
-    association_type TEXT NOT NULL, -- e.g., 'CAUSES', 'SUPPORTS', 'CONTRADICTS'
-    context TEXT,                  -- Optional JSON for relationship details
+    -- TARGET NODE
+    target_id INTEGER NOT NULL,
+    target_type TEXT NOT NULL,       -- 'MEMORY' or 'ENTITY'
     
-    FOREIGN KEY (source_memory_id) REFERENCES memories(id) ON DELETE CASCADE,
-    FOREIGN KEY (target_memory_id) REFERENCES memories(id) ON DELETE CASCADE
+    -- EDGE PROPERTIES
+    association_type TEXT NOT NULL,  -- e.g., 'PART_OF', 'DEPENDS_ON', 'MENTIONS'
+    evidence_memory_id INTEGER,      -- Links to the memory that proved this link
+    confidence REAL DEFAULT 1.0,     -- ML-derived extraction confidence
+    
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 ```
+
+**Graph Patterns Supported:**
+- **`MEMORY -> ENTITY`**: Memory A mentions Entity X.
+- **`ENTITY -> ENTITY`**: Entity X is part of Entity Y (Knowledge Base).
+- **`ENTITY -> MEMORY`**: Entity X was discussed in Memory B.
+- **`MEMORY -> MEMORY`**: Memory A supports or refutes Memory B.

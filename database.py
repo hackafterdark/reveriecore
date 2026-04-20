@@ -57,10 +57,22 @@ class DatabaseManager:
             )
         """)
         
+        # 2. Entities table (Categorical Graph Nodes)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS entities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,      -- Canonical Name (e.g., "provider.py")
+                label TEXT NOT NULL,            -- Type (e.g., "FILE", "FUNCTION")
+                description TEXT,
+                metadata TEXT,                   -- JSON
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
         # Migration: Ensure new columns exist in case table was created with old schema
         self._migrate_columns(cursor)
         
-        # 2. Vector virtual table (using vec0)
+        # 3. Vector virtual table (using vec0)
         # Note: rowid will link to memories.id
         cursor.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec USING vec0(
@@ -69,16 +81,19 @@ class DatabaseManager:
             )
         """)
         
-        # 3. Associations table
+        # 4. Enhanced Associations table (The Graph Edges)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS memory_associations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                source_memory_id INTEGER NOT NULL,
-                target_memory_id INTEGER NOT NULL,
+                source_id INTEGER NOT NULL,
+                source_type TEXT NOT NULL DEFAULT 'MEMORY', -- 'MEMORY' or 'ENTITY'
+                target_id INTEGER NOT NULL,
+                target_type TEXT NOT NULL DEFAULT 'MEMORY',
                 association_type TEXT NOT NULL,
-                context TEXT,
-                FOREIGN KEY (source_memory_id) REFERENCES memories(id) ON DELETE CASCADE,
-                FOREIGN KEY (target_memory_id) REFERENCES memories(id) ON DELETE CASCADE
+                confidence_score REAL DEFAULT 1.0,
+                metadata TEXT,                               -- JSON
+                evidence_memory_id INTEGER,                  -- The memory that asserted this link
+                FOREIGN KEY (evidence_memory_id) REFERENCES memories(id) ON DELETE CASCADE
             )
         """)
         
@@ -129,20 +144,38 @@ class DatabaseManager:
             logger.info("Migrating database: Adding workspace column")
             cursor.execute("ALTER TABLE memories ADD COLUMN workspace TEXT")
         
-        # 3. Associations table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS memory_associations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                source_memory_id INTEGER NOT NULL,
-                target_memory_id INTEGER NOT NULL,
-                association_type TEXT NOT NULL,
-                context TEXT,
-                FOREIGN KEY (source_memory_id) REFERENCES memories(id) ON DELETE CASCADE,
-                FOREIGN KEY (target_memory_id) REFERENCES memories(id) ON DELETE CASCADE
-            )
-        """)
+        # 3. Enhanced Associations Migration
+        cursor.execute("PRAGMA table_info(memory_associations)")
+        assoc_cols = [row[1] for row in cursor.fetchall()]
+        
+        if "source_id" not in assoc_cols:
+            # Table is old format (source_memory_id, target_memory_id)
+            # Recreate it
+            logger.info("Migrating database: Recreating memory_associations with polymorphic support")
+            cursor.execute("DROP TABLE IF EXISTS memory_associations")
+            cursor.execute("""
+                CREATE TABLE memory_associations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_id INTEGER NOT NULL,
+                    source_type TEXT NOT NULL DEFAULT 'MEMORY',
+                    target_id INTEGER NOT NULL,
+                    target_type TEXT NOT NULL DEFAULT 'MEMORY',
+                    association_type TEXT NOT NULL,
+                    confidence_score REAL DEFAULT 1.0,
+                    metadata TEXT,
+                    evidence_memory_id INTEGER,
+                    FOREIGN KEY (evidence_memory_id) REFERENCES memories(id) ON DELETE CASCADE
+                )
+            """)
         
         self.conn.commit()
+
+    def purge_associations(self, memory_id: int):
+        """Removes all triples derived from a specific memory ID (Idempotency Safeguard)."""
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM memory_associations WHERE evidence_memory_id = ?", (memory_id,))
+        self.conn.commit()
+        logger.debug(f"Purged associations for memory {memory_id}")
 
     def get_cursor(self):
         return self.conn.cursor()
