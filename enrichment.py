@@ -4,6 +4,7 @@ import json
 import re
 import urllib.request
 import traceback
+import threading
 from typing import List, Dict, Optional, Any
 from pathlib import Path
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoModelForSequenceClassification
@@ -137,14 +138,22 @@ class InternalLLMClient:
 class EnrichmentService:
     """The Intelligence Layer: Handles embeddings, BART classification, and profiling."""
     
-    def __init__(self, 
-                 embedding_model_name: str = "all-MiniLM-L6-v2", 
-                 summarization_model_name: str = "sshleifer/distilbart-cnn-12-6",
-                 classifier_model_name: str = "facebook/bart-large-mnli"):
-        self.embedding_model_name = embedding_model_name
-        self.summarization_model_name = summarization_model_name
-        self.classifier_model_name = classifier_model_name
+    def __init__(self, config: Optional[Dict[str, Any]] = None, **kwargs):
+        # 1. Resolve Model Names (Prefer config dict, then kwargs, then defaults)
+        cfg = config or kwargs.get("config", {})
         
+        self.embedding_model_name = cfg.get("embedding_model") or kwargs.get("embedding_model_name") or "all-MiniLM-L6-v2"
+        self.summarization_model_name = cfg.get("summarization_model") or kwargs.get("summarization_model_name") or "sshleifer/distilbart-cnn-12-6"
+        self.classifier_model_name = cfg.get("classifier_model") or kwargs.get("classifier_model_name") or "facebook/bart-large-mnli"
+
+        # Defensive Check: Ensure we have strings, not dicts from positional mismatch
+        if not isinstance(self.embedding_model_name, str):
+            self.embedding_model_name = "all-MiniLM-L6-v2"
+        if not isinstance(self.summarization_model_name, str):
+            self.summarization_model_name = "sshleifer/distilbart-cnn-12-6"
+        if not isinstance(self.classifier_model_name, str):
+            self.classifier_model_name = "facebook/bart-large-mnli"
+
         # Models initialized as None (Lazy-Loading)
         self.embedding_model = None
         self.summarizer = None
@@ -152,6 +161,9 @@ class EnrichmentService:
         
         self.classifier_model = None
         self.classifier_tokenizer = None
+        
+        # Concurrent access control
+        self._init_lock = threading.Lock()
 
         # LLM Client for Graph Extraction
         cfg = ConfigLoader.load_config()
@@ -193,27 +205,28 @@ class EnrichmentService:
         logger.info(f"EnrichmentService initialized. LLM Source: {self.llm_client.base_url}, Model: {self.llm_client.model_name}")
 
     def _ensure_loaded(self, models: List[str]):
-        """Lazy loader for specific model backends."""
-        if "embedding" in models and self.embedding_model is None:
-            logger.debug(f"Loading embedding model: {self.embedding_model_name}")
-            self.embedding_model = SentenceTransformer(self.embedding_model_name)
+        """Thread-safe lazy loader for specific model backends."""
+        with self._init_lock:
+            if "embedding" in models and self.embedding_model is None:
+                logger.info(f"Loading embedding model: {self.embedding_model_name}...")
+                self.embedding_model = SentenceTransformer(self.embedding_model_name, device="cpu")
 
-        if "summarizer" in models and self.summarizer is None:
-            logger.debug(f"Loading summarization model: {self.summarization_model_name}")
-            self.summarizer_tokenizer = AutoTokenizer.from_pretrained(self.summarization_model_name)
-            self.summarizer = AutoModelForSeq2SeqLM.from_pretrained(
-                self.summarization_model_name,
-                low_cpu_mem_usage=False
-            ).to("cpu")
+            if "summarizer" in models and self.summarizer is None:
+                logger.info(f"Loading summarization model: {self.summarization_model_name}...")
+                self.summarizer_tokenizer = AutoTokenizer.from_pretrained(self.summarization_model_name)
+                self.summarizer = AutoModelForSeq2SeqLM.from_pretrained(
+                    self.summarization_model_name,
+                    low_cpu_mem_usage=False
+                ).to("cpu")
 
-        if "classifier" in models and self.classifier_model is None:
-            logger.debug(f"Loading zero-shot classifier: {self.classifier_model_name} (This may take a moment)")
-            self.classifier_tokenizer = AutoTokenizer.from_pretrained(self.classifier_model_name)
-            self.classifier_model = AutoModelForSequenceClassification.from_pretrained(
-                self.classifier_model_name,
-                low_cpu_mem_usage=False
-            ).to("cpu")
-            logger.debug("BART Classifier loaded successfully.")
+            if "classifier" in models and self.classifier_model is None:
+                logger.info(f"Loading zero-shot classifier: {self.classifier_model_name}...")
+                self.classifier_tokenizer = AutoTokenizer.from_pretrained(self.classifier_model_name)
+                self.classifier_model = AutoModelForSequenceClassification.from_pretrained(
+                    self.classifier_model_name,
+                    low_cpu_mem_usage=False
+                ).to("cpu")
+                logger.info("BART Classifier loaded successfully.")
 
     def generate_embedding(self, text: str) -> List[float]:
         try:
@@ -249,10 +262,37 @@ class EnrichmentService:
                 num_beams=2, 
                 early_stopping=True
             )
-            return self.summarizer_tokenizer.decode(outputs[0], skip_special_tokens=True)
+            summary = self.summarizer_tokenizer.decode(outputs[0], skip_special_tokens=True)
+            return summary
         except Exception as e:
-            logger.warning(f"Profiling failed: {e}")
-            return text[:200] + "..."
+            logger.error(f"Semantic profiling failed: {e}")
+            return text
+
+    def synthesize_memories(self, memories: List[str], entity_name: str) -> str:
+        """Uses LLM to synthesize multiple fragmented memories into one high-quality summary."""
+        try:
+            if not self.llm_client.check_connectivity():
+                return "\n".join(memories)[:2000] # Fallback: simple join
+
+            prompt = (
+                f"You are a memory consolidation service for a Knowledge Graph. "
+                f"Below are several fragmented memories related to the entity '{entity_name}'. "
+                "Synthesize them into one single, comprehensive, and high-quality memory record. "
+                "Include all technical details, dates, and relationships. "
+                "The result should be the NEW canonical fact for this entity."
+            )
+            
+            context = "\n---\n".join(memories)
+            
+            summary = self.llm_client.call([
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": f"Memories to consolidate:\n{context}"}
+            ])
+            
+            return summary if isinstance(summary, str) else str(summary)
+        except Exception as e:
+            logger.error(f"Memory synthesis failed: {e}")
+            return "\n".join(memories)
 
     def _zero_shot_classify(self, text: str, labels: List[str], hypothesis_template: str = "This example is {}.") -> Dict[str, float]:
         """Manual implementation of zero-shot classification for BART MNLI."""
@@ -277,23 +317,28 @@ class EnrichmentService:
             
         return scores
 
-    def calculate_importance(self, text: str) -> float:
-        """Uses BART to weigh the importance of a memory on a 1.0-5.0 scale."""
+    def calculate_importance(self, text: str) -> Dict[str, Any]:
+        """
+        Uses BART to weigh the importance of a memory on a 1.0-5.0 scale.
+        Also suggests an expiration for low-importance transient chatter.
+        """
         try:
-            # We measure entailment against 'important' and 'critical' vs 'minor'
             labels = ["critical", "important", "minor", "trivial"]
             scores = self._zero_shot_classify(text, labels, "This information is {}.")
             
-            # Calculate a weighted score
-            # Highest weight for critical/important
             raw_score = (scores["critical"] * 5.0) + (scores["important"] * 4.0) + (scores["minor"] * 2.0) + (scores["trivial"] * 1.0)
+            importance = max(1.0, min(5.0, raw_score))
             
-            # Normalize to 1.0-5.0 range
-            # Note: BART scores are probabilities, so critical=1.0 would give 5.0
-            return max(1.0, min(5.0, raw_score))
+            expires_at = None
+            # If trivial or minor and conversation-heavy, suggest expiration (7 days)
+            if importance < 3.0:
+                from datetime import datetime, timedelta
+                expires_at = (datetime.utcnow() + timedelta(days=7)).isoformat()
+                
+            return {"score": importance, "expires_at": expires_at}
         except Exception as e:
             logger.warning(f"Importance scoring failed: {e}")
-            return 1.0
+            return {"score": 1.0, "expires_at": None}
 
     def classify_type(self, text: str) -> MemoryType:
         """Robust zero-shot classification using BART."""
@@ -318,6 +363,32 @@ class EnrichmentService:
         except Exception as e:
             logger.warning(f"Zero-shot classification failed: {e}. Falling back to CONVERSATION.")
             return MemoryType.CONVERSATION
+
+    def extract_query_anchors(self, query: str) -> List[str]:
+        """Lighter LLM pass to extract technical entities from a user query."""
+        try:
+            # Quick check: if the query is very short and non-technical, skip LLM
+            if len(query.split()) < 3 and not any(c in query for c in [".", "(", "/", "\\"]):
+                return []
+
+            if not self.llm_client.check_connectivity():
+                return []
+
+            prompt = (
+                "Extract technical entities (Files, Tools, Classes, Repos) from this query. "
+                "Return as a JSON list: {\"anchors\": [\"name1\", \"name2\"]}. "
+                "If no technical entities, return an empty list."
+            )
+            
+            resp = self.llm_client.call([
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": query}
+            ])
+            
+            return resp.get("anchors", [])
+        except Exception as e:
+            logger.debug(f"Query anchor extraction failed: {e}")
+            return []
 
     def extract_graph_data(self, text: str, memory_id: int, db_manager: Any):
         """

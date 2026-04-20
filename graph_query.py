@@ -70,6 +70,28 @@ class GraphQueryService:
                 
         return list(found_memories)
 
+    def get_memories_by_entities(self, entity_names: List[str]) -> List[int]:
+        """Finds memories that are directly linked to any of the given entity names."""
+        if not entity_names: return []
+        cursor = self.db.get_cursor()
+        placeholders = ','.join(['?'] * len(entity_names))
+        
+        query = f"""
+            SELECT DISTINCT source_id 
+            FROM memory_associations 
+            WHERE source_type = 'MEMORY' 
+            AND target_type = 'ENTITY'
+            AND target_id IN (SELECT id FROM entities WHERE name IN ({placeholders}))
+            UNION
+            SELECT DISTINCT target_id
+            FROM memory_associations
+            WHERE target_type = 'MEMORY'
+            AND source_type = 'ENTITY'
+            AND source_id IN (SELECT id FROM entities WHERE name IN ({placeholders}))
+        """
+        cursor.execute(query, entity_names + entity_names)
+        return [row[0] for row in cursor.fetchall()]
+
     def get_neighbors_summary(self, memory_id: int) -> str:
         """Returns a string summary of entities linked to a memory for context injection."""
         cursor = self.db.get_cursor()

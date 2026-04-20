@@ -2,22 +2,43 @@ import sqlite3
 import sqlite_vec
 import logging
 import json
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 class DatabaseManager:
-    """Manages the SQLite connection and vector virtual tables."""
+    """
+    Thread-safe Singleton for managing SQLite and vector virtual tables.
+    Ensures global locking for write operations across all plugin components.
+    """
+    _instance = None
+    _lock = threading.Lock()
+
+    def __new__(cls, *args, **kwargs):
+        if not cls._instance:
+            with cls._lock:
+                if not cls._instance:
+                    cls._instance = super(DatabaseManager, cls).__new__(cls)
+        return cls._instance
     
     def __init__(self, db_path: str = "reveries.db"):
+        # Initialize only once
+        if hasattr(self, 'initialized'):
+            return
+            
         self.db_path = db_path
         self.conn = None
+        self.initialized = False
         self._initialize_db()
+        self.initialized = True
 
     def _initialize_db(self):
         """Connects, loads extensions, and ensures schema exists."""
         try:
-            self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            # Busy timeout of 10s to handle contention gracefully
+            self.conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=10)
             
             # Load sqlite-vec extension
             self.conn.enable_load_extension(True)
@@ -25,10 +46,22 @@ class DatabaseManager:
             self.conn.enable_load_extension(False)
             
             self._create_schema()
-            logger.info(f"Database initialized at {self.db_path} with sqlite-vec support.")
+            logger.info(f"Database initialized at {self.db_path} with sqlite-vec support and 10s timeout.")
         except Exception as e:
             logger.error(f"Failed to initialize database: {e}")
             raise
+
+    @contextmanager
+    def write_lock(self):
+        """Context manager for atomicity and thread-safety during write operations."""
+        with self._lock:
+            try:
+                yield self.conn.cursor()
+                self.conn.commit()
+            except Exception as e:
+                self.conn.rollback()
+                logger.error(f"Database write operation failed (rolled back): {e}")
+                raise
 
     def _create_schema(self):
         """Creates the relational and virtual tables if they don't exist."""
@@ -52,8 +85,8 @@ class DatabaseManager:
                 privacy TEXT NOT NULL DEFAULT 'PRIVATE',
                 metadata TEXT,
                 learned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                expires_at DATETIME
+                expires_at DATETIME,
+                status TEXT NOT NULL DEFAULT 'ACTIVE' -- 'ACTIVE' or 'ARCHIVED'
             )
         """)
         
@@ -143,6 +176,10 @@ class DatabaseManager:
         if "workspace" not in columns:
             logger.info("Migrating database: Adding workspace column")
             cursor.execute("ALTER TABLE memories ADD COLUMN workspace TEXT")
+            
+        if "status" not in columns:
+            logger.info("Migrating database: Adding status column")
+            cursor.execute("ALTER TABLE memories ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE'")
         
         # 3. Enhanced Associations Migration
         cursor.execute("PRAGMA table_info(memory_associations)")

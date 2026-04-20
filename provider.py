@@ -45,22 +45,6 @@ from .schemas import MemoryType
 
 logger = logging.getLogger(__name__)
 
-SEARCH_SCHEMA = {
-    "name": "reverie_search",
-    "description": (
-        "Search your long-term memory for relevant facts, past conversations, "
-        "or project context. Uses semantic similarity and importance ranking."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string", "description": "What you want to remember."},
-            "limit": {"type": "integer", "description": "Max results (default: 5)."},
-        },
-        "required": ["query"],
-    },
-}
-
 class ReverieMemoryProvider(MemoryProvider):
     """Local RAG memory with SQLite-vec and intelligence-based enrichment."""
 
@@ -106,6 +90,7 @@ class ReverieMemoryProvider(MemoryProvider):
         
         from hermes_constants import get_hermes_home
         
+        # Database is pinned to the preferred .hermes directory
         db_path = get_hermes_home() / "reveriecore.db"
         
         # Identity Context (Provenance via Author/Actor, Scoping via Owner)
@@ -119,7 +104,8 @@ class ReverieMemoryProvider(MemoryProvider):
         try:
             self._db = DatabaseManager(str(db_path))
             self._enrichment = EnrichmentService()
-            self._retriever = Retriever(self._db)
+            # Restore knowledge graph anchoring by passing enrichment to Retriever
+            self._retriever = Retriever(self._db, enrichment=self._enrichment)
             
             # Capture memory_char_limit if passed from config
             if "memory_char_limit" in kwargs:
@@ -136,7 +122,7 @@ class ReverieMemoryProvider(MemoryProvider):
         return (
             "# Long-Term Memory (ReverieCore)\n"
             "Active. You have access to a local knowledge base of past interactions.\n"
-            "Use 'reverie_search' to find specific historical context when needed.\n"
+            "Relevant context is automatically injected during the 'Preparing memory' phase.\n"
             "NOTE: Older or less relevant memories may be returned as abstracts (summaries) to save context window space."
         )
 
@@ -209,13 +195,14 @@ class ReverieMemoryProvider(MemoryProvider):
                 # 3. Search
                 results = self._retriever.search(
                     vec, 
+                    query_text=query,
                     limit=3, 
                     token_budget=budget,
                     strategy=strategy,
                     allowed_owners=[self.owner_id, "PERSONAL_WORKSPACE"]
                 )
                 if results:
-                    lines = [f"- {r['content']}" for r in results]
+                    lines = [f"- {r['content_full']}" for r in results]
                     with self._prefetch_lock:
                         self._prefetch_result = "\n".join(lines)
             except Exception as e:
@@ -236,7 +223,7 @@ class ReverieMemoryProvider(MemoryProvider):
                 
                 # 1. Intelligence Layer Analysis
                 mem_type = self._enrichment.classify_type(full_text)
-                importance = self._enrichment.calculate_importance(full_text)
+                importance = self._enrichment.calculate_importance(full_text)["score"]
                 profile = self._enrichment.generate_semantic_profile(full_text)
                 vec = self._enrichment.generate_embedding(profile) # Embed the profile for cleaner signal
                 
@@ -245,35 +232,34 @@ class ReverieMemoryProvider(MemoryProvider):
                 tc_abstract = self._enrichment.count_tokens(profile)
                 
                 # 2. Relational Store
-                cursor = self._db.get_cursor()
-                cursor.execute("""
-                    INSERT INTO memories (
-                        content_full, content_abstract, 
-                        token_count_full, token_count_abstract,
-                        memory_type, importance_score, 
-                        author_id, owner_id, actor_id, 
-                        session_id, workspace
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    full_text, profile, 
-                    tc_full, tc_abstract,
-                    mem_type.value, importance, 
-                    self.author_id, self.owner_id, self.actor_id, 
-                    self.session_id, self.workspace
-                ))
-                
-                mem_id = cursor.lastrowid
-                
-                # 3. Vector Store
-                import sqlite_vec
-                cursor.execute("""
-                    INSERT INTO memories_vec (rowid, embedding)
-                    VALUES (?, ?)
-                """, (mem_id, sqlite_vec.serialize_float32(vec)))
-                
-                self._db.commit()
-                
+                # Fixed: Using write_lock transaction for safety
+                with self._db.write_lock() as cursor:
+                    cursor.execute("""
+                        INSERT INTO memories (
+                            content_full, content_abstract, 
+                            token_count_full, token_count_abstract,
+                            memory_type, importance_score, 
+                            author_id, owner_id, actor_id, 
+                            session_id, workspace
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        full_text, profile, 
+                        tc_full, tc_abstract,
+                        mem_type.value, importance, 
+                        self.author_id, self.owner_id, self.actor_id, 
+                        self.session_id, self.workspace
+                    ))
+                    
+                    mem_id = cursor.lastrowid
+                    
+                    # 3. Vector Store
+                    import sqlite_vec
+                    cursor.execute("""
+                        INSERT INTO memories_vec (rowid, embedding)
+                        VALUES (?, ?)
+                    """, (mem_id, sqlite_vec.serialize_float32(vec)))
+                    
                 # 4. Graph Extraction (Triggered if high importance)
                 if importance >= 3.0:
                     logger.info(f"Triggering enhanced graph extraction for memory {mem_id}")
@@ -297,43 +283,10 @@ class ReverieMemoryProvider(MemoryProvider):
         self._sync_thread.start()
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        return [SEARCH_SCHEMA]
+        # REMOVED: Custom search tool removed to restore native Brain Icon experience
+        return []
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
-        if tool_name == "reverie_search":
-            query = args.get("query", "")
-            limit = int(args.get("limit", 5))
-            
-            if not query:
-                return tool_error("Missing parameter: query")
-                
-            try:
-                # Calculate Budget & Strategy
-                budget = self._calculate_budget()
-                remaining_ratio = self.remaining_tokens / self.total_context if self.total_context > 0 else 0.5
-                strategy = "abstract_only" if remaining_ratio < 0.2 else "balanced"
-                
-                vec = self._enrichment.generate_embedding(query)
-                results = self._retriever.search(
-                    vec, 
-                    limit=limit,
-                    token_budget=budget,
-                    strategy=strategy,
-                    allowed_owners=[self.owner_id, "PERSONAL_WORKSPACE"]
-                )
-                
-                if not results:
-                    return json.dumps({"result": "No relevant memories found."})
-                
-                return json.dumps({
-                    "results": [r['content'] for r in results],
-                    "count": len(results),
-                    "budget_used": sum(r['tokens'] for r in results),
-                    "strategy": strategy
-                })
-            except Exception as e:
-                return tool_error(f"Search failed: {e}")
-                
         return tool_error(f"Unknown tool: {tool_name}")
 
     def shutdown(self) -> None:

@@ -1,5 +1,7 @@
+import math
+from datetime import datetime
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from .database import DatabaseManager
 from .graph_query import GraphQueryService
 
@@ -8,175 +10,173 @@ logger = logging.getLogger(__name__)
 class Retriever:
     """RAG Engine: Handles vector search, importance-based ranking, and graph traversal."""
     
-    def __init__(self, db: DatabaseManager):
+    def __init__(self, db: DatabaseManager, enrichment: Any = None):
         self.db = db
         self.graph = GraphQueryService(db)
+        self.enrichment = enrichment
+
+    def _calculate_decay(self, learned_at_str: str, importance: float, expires_at: Optional[str] = None) -> float:
+        """
+        Calculates time decay score. 
+        - Permanent memories (expires_at is NULL) have NO decay (1.0).
+        - High importance memories (>= 4.0) have permanent weight (1.0).
+        - Others follow a 48-hour half-life exponential decay.
+        """
+        if not expires_at or importance >= 4.0:
+            return 1.0
+        
+        try:
+            learned_at = datetime.fromisoformat(learned_at_str.replace("Z", "+00:00"))
+            now = datetime.utcnow()
+            age_hours = (now - learned_at).total_seconds() / 3600.0
+            
+            decay = math.pow(0.5, age_hours / 48.0)
+            return max(0.1, decay)
+        except Exception as e:
+            logger.debug(f"Decay calculation failed: {e}")
+            return 1.0
+
+    def _detect_freshness(self, query: str) -> bool:
+        """Detects if the user wants a 'clean slate' / 'new idea'."""
+        keywords = ["clean slate", "new idea", "fresh start", "forget history", "new project"]
+        return any(k in query.lower() for k in keywords)
 
     def search(self, 
                query_vector: List[float], 
+               query_text: str = "",
                limit: int = 5, 
                token_budget: int = 1000,
                strategy: str = "balanced",
-               similarity_weight: float = 0.7, 
-               importance_weight: float = 0.3, 
-               allowed_owners: List[str] = None) -> List[Dict[str, Any]]:
+               similarity_weight: float = 0.5, 
+               importance_weight: float = 0.3,
+               decay_weight: float = 0.2,
+               allowed_owners: List[str] = None,
+               include_archived: bool = False) -> List[Dict[str, Any]]:
         """
-        Performs a hybrid search: Vector Similarity + Importance Re-ranking.
-        
-        Optimizes for context window usage by choosing between full content 
-        and abstracts based on the provided token_budget.
+        Advanced Anchor-Aware Search:
+        1. Freshness Check: Bypass graph if 'clean slate' requested.
+        2. Semantic Anchoring: Graph-first discovery from query entities.
+        3. Broad Fallback: Trigger vector search if graph results < 3.
+        4. Re-ranking: Similarity + Importance + Temporal Decay.
         """
         cursor = self.db.get_cursor()
+        candidates = []
+        seen_ids = set()
         
-        # 1. Fetch top K*3 candidates using vector search
-        candidate_limit = limit * 3
+        status_filter = "('ACTIVE')" if not include_archived else "('ACTIVE', 'ARCHIVED')"
         
-        try:
-            import sqlite_vec
-            
-            # Build filter clause
-            filter_clause = ""
-            params = [sqlite_vec.serialize_float32(query_vector), candidate_limit]
-            
-            if allowed_owners:
-                placeholders = ",".join(["?"] * len(allowed_owners))
-                filter_clause = f"AND (m.owner_id IN ({placeholders}) OR m.privacy = 'PUBLIC')"
-                params.extend(allowed_owners)
-            
-            query = f"""
-                SELECT 
-                    m.id, 
-                    m.content_full, 
-                    m.content_abstract,
-                    m.token_count_full,
-                    m.token_count_abstract,
-                    m.importance_score, 
-                    v.distance
-                FROM memories_vec v
-                JOIN memories m ON v.rowid = m.id
-                WHERE v.embedding MATCH ? AND v.k = ?
-                {filter_clause}
-                ORDER BY v.distance ASC
-            """
-            
-            cursor.execute(query, params)
-            
-            rows = cursor.fetchall()
-            if not rows:
-                return []
+        is_fresh = self._detect_freshness(query_text)
+        anchors = []
+        if not is_fresh and self.enrichment:
+            anchors = self.enrichment.extract_query_anchors(query_text)
 
-            # 2. Re-rank based on importance
-            candidates = []
-            seen_ids = set()
-            for row in rows:
-                mem_id, content_full, content_abstract, tc_full, tc_abstract, importance, distance = row
-                seen_ids.add(mem_id)
-                
-                # Convert distance to similarity
-                similarity = 1.0 / (1.0 + distance) 
-                
-                # Normalize importance
-                norm_importance = min(importance / 5.0, 1.0)
-                
-                final_score = (similarity * similarity_weight) + (norm_importance * importance_weight)
-                
-                candidates.append({
-                    "id": mem_id,
-                    "content_full": content_full,
-                    "content_abstract": content_abstract,
-                    "tc_full": tc_full or (len(content_full) // 4),
-                    "tc_abstract": tc_abstract or (len(content_abstract or "") // 4),
-                    "score": final_score,
-                    "importance": importance,
-                    "source": "vector"
-                })
+        # A. Semantic Anchoring (Graph-First)
+        graph_anchored_ids = []
+        if anchors:
+            graph_anchored_ids = self.graph.get_memories_by_entities(anchors)
+            if graph_anchored_ids:
+                id_placeholders = ",".join(["?"] * len(graph_anchored_ids))
+                query = f"SELECT id, content_full, content_abstract, token_count_full, token_count_abstract, importance_score, learned_at, expires_at FROM memories WHERE id IN ({id_placeholders}) AND status IN {status_filter}"
+                cursor.execute(query, tuple(graph_anchored_ids))
+                for row in cursor.fetchall():
+                    m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp = row
+                    decay = self._calculate_decay(lat, imp, exp)
+                    
+                    # Graph anchors get a boost
+                    score = (0.6 * similarity_weight) + (min(imp / 5.0, 1.0) * importance_weight) + (decay * decay_weight) + 0.2
+                    
+                    candidates.append({
+                        "id": m_id, "content_full": c_f, "content_abstract": c_a,
+                        "tc_full": tc_f or (len(c_f) // 4), "tc_abstract": tc_a or (len(c_a or "") // 4),
+                        "score": score, "importance": imp, "learned_at": lat, "source": "anchor"
+                    })
+                    seen_ids.add(m_id)
 
-            # 3. Graph Augmentation: Follow links from top vector results
-            # We take the top 'limit' candidates and see what they are connected to
-            seed_ids = [c["id"] for c in sorted(candidates, key=lambda x: x["score"], reverse=True)[:limit]]
-            linked_ids = self.graph.get_related_memories(seed_ids)
-            
-            if linked_ids:
-                # Remove duplicates already in seen_ids
+        # B. Vector Fallback (Broad Search)
+        # Triggered if freshness is requested OR we have fewer than 3 graph results
+        if is_fresh or len(candidates) < 3:
+            candidate_limit = limit * 3
+            try:
+                import sqlite_vec
+                filter_clause = ""
+                v_params = [sqlite_vec.serialize_float32(query_vector), candidate_limit]
+                
+                if allowed_owners:
+                    placeholders = ",".join(["?"] * len(allowed_owners))
+                    filter_clause = f"AND (m.owner_id IN ({placeholders}) OR m.privacy = 'PUBLIC')"
+                    v_params.extend(allowed_owners)
+                
+                v_query = f"""
+                    SELECT m.id, m.content_full, m.content_abstract, m.token_count_full, m.token_count_abstract, m.importance_score, m.learned_at, m.expires_at, v.distance
+                    FROM memories_vec v JOIN memories m ON v.rowid = m.id
+                    WHERE v.embedding MATCH ? AND v.k = ? AND m.status IN {status_filter} {filter_clause}
+                    ORDER BY v.distance ASC
+                """
+                cursor.execute(v_query, v_params)
+                for row in cursor.fetchall():
+                    m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp, dist = row
+                    if m_id in seen_ids: continue
+                    
+                    similarity = 1.0 / (1.0 + dist)
+                    decay = 1.0 if is_fresh else self._calculate_decay(lat, imp, exp)
+                    
+                    final_score = (similarity * similarity_weight) + (min(imp / 5.0, 1.0) * importance_weight) + (decay * decay_weight)
+                    
+                    candidates.append({
+                        "id": m_id, "content_full": c_f, "content_abstract": c_a,
+                        "tc_full": tc_f or (len(c_f) // 4), "tc_abstract": tc_a or (len(c_a or "") // 4),
+                        "score": final_score, "importance": imp, "learned_at": lat, "source": "vector"
+                    })
+                    seen_ids.add(m_id)
+            except Exception as e:
+                logger.error(f"Vector fallback failed: {e}")
+
+        # C. Graph Augmentation (Connections from top results)
+        if not is_fresh:
+            seed_ids = [c["id"] for c in sorted(candidates, key=lambda x: x["score"], reverse=True)[:3]]
+            if seed_ids:
+                linked_ids = self.graph.get_related_memories(seed_ids)
                 new_ids = [i for i in linked_ids if i not in seen_ids]
                 if new_ids:
                     id_placeholders = ",".join(["?"] * len(new_ids))
-                    fetch_query = f"""
-                        SELECT id, content_full, content_abstract, token_count_full, token_count_abstract, importance_score
-                        FROM memories WHERE id IN ({id_placeholders})
-                    """
+                    fetch_query = f"SELECT id, content_full, content_abstract, token_count_full, token_count_abstract, importance_score, learned_at, expires_at FROM memories WHERE id IN ({id_placeholders}) AND status IN {status_filter}"
                     cursor.execute(fetch_query, tuple(new_ids))
                     for row in cursor.fetchall():
-                        m_id, c_full, c_abs, tc_f, tc_a, imp = row
-                        
-                        # Graph hits get a "linked" boost but no similarity score (since they weren't in vector search)
-                        # We assign them a synthetic score based on their importance and the fact they are linked
-                        # to a relevant node.
-                        final_score = (0.5 * similarity_weight) + (min(imp / 5.0, 1.0) * importance_weight)
-                        
+                        m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp = row
+                        decay = self._calculate_decay(lat, imp, exp)
+                        score = (0.4 * similarity_weight) + (min(imp / 5.0, 1.0) * importance_weight) + (decay * decay_weight)
                         candidates.append({
-                            "id": m_id,
-                            "content_full": c_full,
-                            "content_abstract": c_abs,
-                            "tc_full": tc_f or (len(c_full) // 4),
-                            "tc_abstract": tc_a or (len(c_abs or "") // 4),
-                            "score": final_score,
-                            "importance": imp,
-                            "source": "graph"
+                            "id": m_id, "content_full": c_f, "content_abstract": c_a,
+                            "tc_full": tc_f or (len(c_f) // 4), "tc_abstract": tc_a or (len(c_a or "") // 4),
+                            "score": score, "importance": imp, "learned_at": lat, "source": "graph"
                         })
                         seen_ids.add(m_id)
 
-            # Sort by final score descending
-            candidates.sort(key=lambda x: x["score"], reverse=True)
+        # D. Budget-Aware Selection (Same as before)
+        candidates.sort(key=lambda x: x["score"], reverse=True)
+        results = []
+        current_tokens = 0
+        for c in candidates:
+            if len(results) >= limit: break
+            chosen_content = None
+            chosen_tokens = 0
+            version = "full"
             
-            # 4. Budget-Aware Selection
-            results = []
-            current_tokens = 0
+            if strategy == "abstract_only" and c["content_abstract"]:
+                chosen_content = c["content_abstract"]; chosen_tokens = c["tc_abstract"]; version = "abstract"
+            else:
+                if current_tokens + c["tc_full"] <= token_budget:
+                    chosen_content = c["content_full"]; chosen_tokens = c["tc_full"]; version = "full"
+                elif c["content_abstract"] and current_tokens + c["tc_abstract"] <= token_budget:
+                    chosen_content = c["content_abstract"]; chosen_tokens = c["tc_abstract"]; version = "abstract"
             
-            for c in candidates:
-                if len(results) >= limit:
-                    break
-                    
-                chosen_content = None
-                chosen_tokens = 0
-                version = "full"
-                
-                # Decision logic
-                if strategy == "abstract_only" and c["content_abstract"]:
-                    chosen_content = c["content_abstract"]
-                    chosen_tokens = c["tc_abstract"]
-                    version = "abstract"
-                else:
-                    # Try full first
-                    if current_tokens + c["tc_full"] <= token_budget:
-                        chosen_content = c["content_full"]
-                        chosen_tokens = c["tc_full"]
-                        version = "full"
-                    # Fallback to abstract if full is too big
-                    elif c["content_abstract"] and current_tokens + c["tc_abstract"] <= token_budget:
-                        chosen_content = c["content_abstract"]
-                        chosen_tokens = c["tc_abstract"]
-                        version = "abstract"
-                
-                if chosen_content:
-                    # Append Graph Metadata if applicable
-                    display_content = chosen_content
-                    if c["source"] == "graph":
-                        summary = self.graph.get_neighbors_summary(c["id"])
-                        display_content += summary
-
-                    results.append({
-                        "id": c["id"],
-                        "content": display_content,
-                        "tokens": chosen_tokens,
-                        "version": version,
-                        "score": c["score"]
-                    })
-                    current_tokens += chosen_tokens
-            
-            logger.info(f"Retrieved {len(results)} memories ({current_tokens}/{token_budget} tokens). Search sources: Vector + Graph traversal.")
-            return results
-
-        except Exception as e:
-            logger.error(f"Search failed: {e}")
-            return []
+            if chosen_content:
+                display_content = chosen_content
+                if c["source"] in ["graph", "anchor"]:
+                    summary = self.graph.get_neighbors_summary(c["id"])
+                    display_content += summary
+                results.append({"id": c["id"], "content": display_content, "tokens": chosen_tokens, "version": version, "score": c["score"]})
+                current_tokens += chosen_tokens
+        
+        logger.info(f"Retrieved {len(results)} memories ({current_tokens}/{token_budget} tokens). Strategy: {strategy}, IsFresh: {is_fresh}")
+        return results
