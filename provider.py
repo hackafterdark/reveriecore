@@ -6,6 +6,11 @@ vector search, and sentiment-based importance scoring.
 
 from __future__ import annotations
 
+import os
+# Must be set BEFORE other imports to ensure libraries pick these up immediately
+os.environ["TQDM_DISABLE"] = "1"
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+
 import json
 import logging
 import threading
@@ -16,9 +21,9 @@ from pathlib import Path
 
 import warnings
 import sys
+import logging.handlers
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.WARNING) # silence the plugin's debug/info logs
 
 # 1. Immediate suppression for the specific pkg_resources warning
 warnings.filterwarnings("ignore", category=UserWarning, module="pkg_resources")
@@ -97,7 +102,8 @@ class ReverieMemoryProvider(MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         """Initialize models and database."""
-        logger.warning("!!! REVERIECORE_LOAD_CHECK: VERSION_V3_LAZY !!!")
+        self._setup_logging()
+        
         from hermes_constants import get_hermes_home
         
         db_path = get_hermes_home() / "reveriecore.db"
@@ -339,3 +345,74 @@ class ReverieMemoryProvider(MemoryProvider):
                 t.join(timeout=10.0)
         if self._db:
             self._db.close()
+
+    def _setup_logging(self):
+        """Configures a dedicated log file and silences CLI noise."""
+        from hermes_constants import get_hermes_home
+        log_dir = get_hermes_home() / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "reverie.log"
+
+        # 1. Global suppression for CLI noise
+        # Note: Some are set at module-level in this file as well
+        os.environ["TQDM_DISABLE"] = "1"
+        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+        
+        # Determine the root logger for the plugin package
+        # Since we use Relative imports, getLogger("reveriecore") is the parent
+        parent_logger = logging.getLogger("reveriecore")
+        parent_logger.setLevel(logging.INFO) # Capture Info+ in the file
+        
+        # Prevent double logging if Hermes root logger is active
+        parent_logger.propagate = False
+
+        # 2. File Handler
+        try:
+            handler = logging.handlers.RotatingFileHandler(
+                str(log_file), 
+                maxBytes=10*1024*1024, # 10MB
+                backupCount=5
+            )
+            formatter = logging.Formatter(
+                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            )
+            handler.setFormatter(formatter)
+            
+            # Remove any existing handlers (like defaults) to avoid stdout leak
+            for h in parent_logger.handlers[:]:
+                parent_logger.removeHandler(h)
+                
+            parent_logger.addHandler(handler)
+        except Exception as e:
+            # If we can't write to the log, we probably shouldn't crash, 
+            # but we can't log it to the file either... 
+            # We'll just print to stderr as a last resort
+            print(f"ReverieCore: Failed to setup logging file {log_file}: {e}", file=sys.stderr)
+
+        # 3. Silence Noisy Dependencies
+        noisy_libs = [
+            "transformers", "huggingface_hub", "urllib3", "torch", 
+            "sentence_transformers", "filelock"
+        ]
+        for lib in noisy_libs:
+            l = logging.getLogger(lib)
+            l.setLevel(logging.ERROR)
+            # Ensure they don't leak to stdout if we're in a verbose environment
+            l.propagate = False 
+            # If they have handlers, they might still log to stdout
+            # But usually they don't have their own handlers by default, 
+            # they rely on the root logger.
+            
+        try:
+            import transformers
+            transformers.logging.set_verbosity_error()
+            # New: Specifically disable progress bars via internal API
+            try:
+                from transformers.utils import logging as transformers_logging
+                transformers_logging.disable_progress_bar()
+            except ImportError:
+                pass
+        except ImportError:
+            pass
+
+        logger.info(f"ReverieCore logging initialized. File: {log_file}")

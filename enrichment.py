@@ -27,16 +27,16 @@ class EnrichmentService:
         self.classifier_model = None
         self.classifier_tokenizer = None
         
-        logger.info("EnrichmentService initialized (Lazy). BART is ready for zero-shot tasks.")
+        logger.debug("EnrichmentService initialized (Lazy). BART is ready for zero-shot tasks.")
 
     def _ensure_loaded(self, models: List[str]):
         """Lazy loader for specific model backends."""
         if "embedding" in models and self.embedding_model is None:
-            logger.info(f"Loading embedding model: {self.embedding_model_name}")
+            logger.debug(f"Loading embedding model: {self.embedding_model_name}")
             self.embedding_model = SentenceTransformer(self.embedding_model_name)
 
         if "summarizer" in models and self.summarizer is None:
-            logger.info(f"Loading summarization model: {self.summarization_model_name}")
+            logger.debug(f"Loading summarization model: {self.summarization_model_name}")
             self.summarizer_tokenizer = AutoTokenizer.from_pretrained(self.summarization_model_name)
             self.summarizer = AutoModelForSeq2SeqLM.from_pretrained(
                 self.summarization_model_name,
@@ -44,18 +44,18 @@ class EnrichmentService:
             ).to("cpu")
 
         if "classifier" in models and self.classifier_model is None:
-            logger.info(f"Loading zero-shot classifier: {self.classifier_model_name} (This may take a moment)")
+            logger.debug(f"Loading zero-shot classifier: {self.classifier_model_name} (This may take a moment)")
             self.classifier_tokenizer = AutoTokenizer.from_pretrained(self.classifier_model_name)
             self.classifier_model = AutoModelForSequenceClassification.from_pretrained(
                 self.classifier_model_name,
                 low_cpu_mem_usage=False
             ).to("cpu")
-            logger.info("BART Classifier loaded successfully.")
+            logger.debug("BART Classifier loaded successfully.")
 
     def generate_embedding(self, text: str) -> List[float]:
         try:
             self._ensure_loaded(["embedding"])
-            return self.embedding_model.encode([text])[0].tolist()
+            return self.embedding_model.encode([text], show_progress_bar=False)[0].tolist()
         except Exception as e:
             logger.error(f"Embedding failed: {e}")
             return [0.0] * 384 
