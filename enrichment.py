@@ -3,6 +3,7 @@ from typing import List, Dict
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoModelForSequenceClassification
 import torch
 import torch.nn.functional as F
+from sentence_transformers import SentenceTransformer
 from .schemas import MemoryType
 
 logger = logging.getLogger(__name__)
@@ -37,12 +38,18 @@ class EnrichmentService:
         if "summarizer" in models and self.summarizer is None:
             logger.info(f"Loading summarization model: {self.summarization_model_name}")
             self.summarizer_tokenizer = AutoTokenizer.from_pretrained(self.summarization_model_name)
-            self.summarizer = AutoModelForSeq2SeqLM.from_pretrained(self.summarization_model_name)
+            self.summarizer = AutoModelForSeq2SeqLM.from_pretrained(
+                self.summarization_model_name,
+                low_cpu_mem_usage=False
+            ).to("cpu")
 
         if "classifier" in models and self.classifier_model is None:
             logger.info(f"Loading zero-shot classifier: {self.classifier_model_name} (This may take a moment)")
             self.classifier_tokenizer = AutoTokenizer.from_pretrained(self.classifier_model_name)
-            self.classifier_model = AutoModelForSequenceClassification.from_pretrained(self.classifier_model_name)
+            self.classifier_model = AutoModelForSequenceClassification.from_pretrained(
+                self.classifier_model_name,
+                low_cpu_mem_usage=False
+            ).to("cpu")
             logger.info("BART Classifier loaded successfully.")
 
     def generate_embedding(self, text: str) -> List[float]:

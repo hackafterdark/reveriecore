@@ -10,6 +10,7 @@ import json
 import logging
 import threading
 import time
+import atexit
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
@@ -84,6 +85,7 @@ class ReverieMemoryProvider(MemoryProvider):
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
         self._sync_thread = None
+        self._is_shutdown = False
 
     @property
     def name(self) -> str:
@@ -116,6 +118,9 @@ class ReverieMemoryProvider(MemoryProvider):
             # Capture memory_char_limit if passed from config
             if "memory_char_limit" in kwargs:
                 self.memory_char_limit = int(kwargs["memory_char_limit"])
+            
+            # Register for automatic cleanup on exit
+            atexit.register(self.shutdown)
             
             logger.info(f"ReverieCore initialized for {self.author_id} in {self.owner_id} (Actor: {self.actor_id})")
         except Exception as e:
@@ -187,6 +192,7 @@ class ReverieMemoryProvider(MemoryProvider):
             return
 
         def _run():
+            try:
                 # 1. Calculate Budget & Strategy
                 budget = self._calculate_budget()
                 remaining_ratio = self.remaining_tokens / self.total_context if self.total_context > 0 else 0.5
@@ -321,8 +327,15 @@ class ReverieMemoryProvider(MemoryProvider):
         return tool_error(f"Unknown tool: {tool_name}")
 
     def shutdown(self) -> None:
-        if self._db:
-            self._db.close()
+        if self._is_shutdown:
+            return
+        self._is_shutdown = True
+        
+        if self._prefetch_thread or self._sync_thread:
+            logger.info("ReverieCore: Synchronizing final memories and cleaning up (this may take a few seconds)...")
+            
         for t in (self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():
-                t.join(timeout=2.0)
+                t.join(timeout=10.0)
+        if self._db:
+            self._db.close()

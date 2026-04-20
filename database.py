@@ -153,3 +153,7 @@ class DatabaseManager:
     def close(self):
         if self.conn:
             self.conn.close()
+            self.conn = None
+
+    def __del__(self):
+        self.close()
