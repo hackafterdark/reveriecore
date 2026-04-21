@@ -4,10 +4,7 @@ This document outlines the core architectural principles and retrieval optimizat
 
 ## 1. Core Architectural Concepts
 
-### Cognitive Intent Classification (Unified Intelligence)
-Instead of classifying queries by *topic* (e.g., "coding" vs. "creative"), ReverieCore classifies queries by **Cognitive Goal**. 
-
-In our final optimization pass, we retired the dual-model setup (BART/mDeBERTa) and consolidated all logic onto the **`MoritzLaurer/mDeBERTa-v3-base-mnli-xnli`** model. This provides native multi-lingual support and reduces the VRAM footprint by ~500MB without sacrificing accuracy.
+In our final optimization pass, we transitioned from `BART-Large-MNLI` to a unified **`MoritzLaurer/mDeBERTa-v3-base-mnli-xnli`** architecture. This provided a language-agnostic replacement for all classification tasks, reducing the VRAM footprint by ~500MB while improving native cross-lingual performance.
 
 The system maps queries to three core horizons:
 - **Retrieving specific facts or entities (Precision):** High-gravity retrieval for concrete details.
