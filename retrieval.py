@@ -167,13 +167,33 @@ class Retriever:
                 logger.error(f"Vector fallback failed: {e}")
 
         # C. Graph Augmentation (Connections from top results)
+        depth_reached = 0
+        avg_signal = 0.0
         if not is_fresh:
             seed_ids = [c["id"] for c in sorted(candidates, key=lambda x: x["score"], reverse=True)[:3]]
             if seed_ids:
                 # Calculate dynamic gravity before expansion
                 gravity = self._calculate_gravity(query_text, candidates[:5])
-                linked_ids = self.graph.get_related_memories(seed_ids, anchor_entities=anchors, gravity=gravity)
-                new_ids = [i for i in linked_ids if i not in seen_ids]
+                
+                # --- ITERATIVE 1-HOP DOMINANCE ---
+                # Attempt Depth 1 First
+                linked_results = self.graph.get_related_memories(seed_ids, anchor_entities=anchors, gravity=gravity, depth=1)
+                depth_reached = 1
+                
+                # Assess Signal Strength
+                count = len(linked_results)
+                avg_signal = sum(linked_results.values()) / count if count > 0 else 0.0
+                
+                # If signal is weak (few results OR low confidence), try Depth 2
+                if count < 3 or avg_signal < 0.6:
+                    logger.debug(f"Weak 1-hop signal ({count} results, {avg_signal:.2f} avg). Expanding to Depth 2...")
+                    linked_results = self.graph.get_related_memories(seed_ids, anchor_entities=anchors, gravity=gravity, depth=2)
+                    depth_reached = 2
+                    avg_signal = sum(linked_results.values()) / len(linked_results) if linked_results else 0.0
+                
+                logger.info(f"Graph Expansion Complete. Depth: {depth_reached}, Signal: {avg_signal:.2f}, Found: {len(linked_results)}")
+                
+                new_ids = [i for i in linked_results.keys() if i not in seen_ids]
                 if new_ids:
                     id_placeholders = ",".join(["?"] * len(new_ids))
                     fetch_query = f"SELECT id, content_full, content_abstract, token_count_full, token_count_abstract, importance_score, learned_at, expires_at FROM memories WHERE id IN ({id_placeholders}) AND status IN {status_filter}"
@@ -181,7 +201,11 @@ class Retriever:
                     for row in cursor.fetchall():
                         m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp = row
                         decay = self._calculate_decay(lat, imp, exp)
-                        score = (0.4 * similarity_weight) + (min(imp / 5.0, 1.0) * importance_weight) + (decay * decay_weight)
+                        
+                        # Graph boost incorporates the discovery score from graph traversal
+                        discovery_boost = linked_results.get(m_id, 0.5) # Default to 0.5 if missing
+                        score = (0.4 * similarity_weight) + (min(imp / 5.0, 1.0) * importance_weight) + (discovery_boost * 0.1) + (decay * decay_weight)
+                        
                         candidates.append({
                             "id": m_id, "content_full": c_f, "content_abstract": c_a,
                             "tc_full": tc_f or (len(c_f) // 4), "tc_abstract": tc_a or (len(c_a or "") // 4),

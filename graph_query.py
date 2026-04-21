@@ -10,18 +10,15 @@ class GraphQueryService:
     def __init__(self, db_manager):
         self.db = db_manager
 
-    def get_related_memories(self, start_memory_ids: List[int], anchor_entities: List[str] = None, gravity: float = 1.0, depth: int = 2, per_node_limit: int = 10) -> List[int]:
+    def get_related_memories(self, start_memory_ids: List[int], anchor_entities: List[str] = None, gravity: float = 1.0, depth: int = 2, per_node_limit: int = 10) -> Dict[int, float]:
         """
         Traverses the graph to find memories linked to the start nodes.
         Path: Memory <-> Entity <-> Entity <-> Memory
         
-        Uses a step-by-step Python traversal with SQL neighbor lookups 
-        to ensure 'Hub Protection' can be reliably enforced.
-
-        Gravity: A multiplier for associations connected to query anchors.
+        Returns: Dict[memory_id, max_discovery_score]
         """
         if not start_memory_ids:
-            return []
+            return {}
             
         cursor = self.db.get_cursor()
 
@@ -32,17 +29,17 @@ class GraphQueryService:
             cursor.execute(f"SELECT id FROM entities WHERE name IN ({placeholders})", tuple(anchor_entities))
             anchor_ids = {row[0] for row in cursor.fetchall()}
         
-        # Track state
-        visited = set()
+        # Track state: (node_id, node_type) -> max_score
+        visited = {}
         for mid in start_memory_ids:
-            visited.add((mid, 'MEMORY'))
+            visited[(mid, 'MEMORY')] = 1.0 # Seeds start with max confidence
             
         current_layer = []
         for mid in start_memory_ids:
             current_layer.append((mid, 'MEMORY'))
             
-        # All found memories (excluding seeds)
-        found_memories = set()
+        # All found memories: id -> score
+        found_memories = {}
         
         for level in range(depth):
             if not current_layer:
@@ -50,21 +47,18 @@ class GraphQueryService:
                 
             next_layer = []
             
-            # Process current layer in batches for efficiency (optional, but good)
-            # For simplicity, we'll do one query for all nodes in the current layer
             for node_id, node_type in current_layer:
                 # anchor_id_placeholders for the CASE statement
                 anchor_list = list(anchor_ids) if anchor_ids else [-1]
                 placeholders = ",".join(["?"] * len(anchor_list))
 
+                # We select discovery_score to propagate confidence
                 neighbors_query = f"""
                     SELECT 
                         CASE WHEN source_id = ? AND source_type = ? THEN target_id ELSE source_id END as next_id,
                         CASE WHEN source_id = ? AND source_type = ? THEN target_type ELSE source_type END as next_type,
                         confidence_score,
-                        -- Prioritize ENTITY types over MEMORY types for bridging logic
                         CASE WHEN (CASE WHEN source_id = ? AND source_type = ? THEN target_type ELSE source_type END) = 'ENTITY' THEN 1 ELSE 0 END as type_weight,
-                        -- Anchor check
                         CASE WHEN (CASE WHEN source_id = ? AND source_type = ? THEN target_id ELSE source_id END) IN ({placeholders}) 
                              AND (CASE WHEN source_id = ? AND source_type = ? THEN target_type ELSE source_type END) = 'ENTITY'
                              THEN 1 ELSE 0 END as is_anchor,
@@ -72,35 +66,33 @@ class GraphQueryService:
                     FROM memory_associations
                     WHERE (source_id = ? AND source_type = ?) OR (target_id = ? AND target_type = ?)
                 """
-                # Combined score: confidence * (1 + (is_anchor * gravity))
-                # We do this in Python or via a slightly more complex SQL. 
-                # Let's do it in SQL:
                 neighbors_query = f"SELECT next_id, next_type, confidence_score, type_weight, (confidence_score * (1 + (is_anchor * ?))) as discovery_score, rowid FROM ({neighbors_query}) ORDER BY type_weight DESC, discovery_score DESC, rowid ASC LIMIT ?"
                 
                 params = [
-                    node_id, node_type, node_id, node_type, # for next_id/next_type
-                    node_id, node_type, # for type_weight
-                    node_id, node_type, node_id, node_type, # for is_anchor
+                    node_id, node_type, node_id, node_type,
+                    node_id, node_type,
+                    node_id, node_type, node_id, node_type,
                 ]
-                params.extend(anchor_list) # for the IN clause
-                params.extend([node_id, node_type, node_id, node_type]) # for WHERE clause
-                params.extend([gravity, per_node_limit]) # for final sort/limit
+                params.extend(anchor_list)
+                params.extend([node_id, node_type, node_id, node_type])
+                params.extend([gravity, per_node_limit])
 
                 cursor.execute(neighbors_query, tuple(params))
                 
-                for next_id, next_type, _, _, _ in cursor.fetchall():
-                    if (next_id, next_type) not in visited:
-                        visited.add((next_id, next_type))
+                for next_id, next_type, _, _, d_score, _ in cursor.fetchall():
+                    # If not visited OR we found a higher-score path
+                    if (next_id, next_type) not in visited or d_score > visited[(next_id, next_type)]:
+                        visited[(next_id, next_type)] = d_score
                         next_layer.append((next_id, next_type))
                         if next_type == 'MEMORY':
-                            found_memories.add(next_id)
+                            found_memories[next_id] = max(found_memories.get(next_id, 0), d_score)
                             
             current_layer = next_layer
-            # Global cap to prevent extreme growth
+            # Global cap
             if len(found_memories) >= 50:
                 break
                 
-        return list(found_memories)
+        return found_memories
 
     def get_memories_by_entities(self, entity_names: List[str]) -> List[int]:
         """Finds memories that are directly linked to any of the given entity names."""
