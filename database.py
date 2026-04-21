@@ -41,13 +41,16 @@ class DatabaseManager:
             # Busy timeout of 10s to handle contention gracefully
             self.conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=10)
             
-            # Load sqlite-vec extension
+            # 1. Enable WAL mode for better concurrency in AaaS/Background environments
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            
+            # 2. Load sqlite-vec extension
             self.conn.enable_load_extension(True)
             sqlite_vec.load(self.conn)
             self.conn.enable_load_extension(False)
             
             self._create_schema()
-            logger.info(f"Database initialized at {self.db_path} with sqlite-vec support and 10s timeout.")
+            logger.info(f"Database initialized at {self.db_path} (WAL Mode) with sqlite-vec support and 10s timeout.")
         except Exception as e:
             logger.error(f"Failed to initialize database: {e}")
             raise
@@ -86,6 +89,7 @@ class DatabaseManager:
                 privacy TEXT NOT NULL DEFAULT 'PRIVATE',
                 metadata TEXT,
                 learned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_accessed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 expires_at DATETIME,
                 status TEXT NOT NULL DEFAULT 'ACTIVE' -- 'ACTIVE' or 'ARCHIVED'
             )
@@ -181,6 +185,14 @@ class DatabaseManager:
         if "status" not in columns:
             logger.info("Migrating database: Adding status column")
             cursor.execute("ALTER TABLE memories ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE'")
+
+        if "last_accessed_at" not in columns:
+            logger.info("Migrating database: Adding last_accessed_at column")
+            # SQLite does not allow adding a column with a dynamic default (like CURRENT_TIMESTAMP) 
+            # in some versions, so we add it and then populate it.
+            cursor.execute("ALTER TABLE memories ADD COLUMN last_accessed_at DATETIME")
+            # For existing memories, seed last_accessed_at with learned_at if available, else current time
+            cursor.execute("UPDATE memories SET last_accessed_at = COALESCE(learned_at, CURRENT_TIMESTAMP)")
         
         # 3. Enhanced Associations Migration
         cursor.execute("PRAGMA table_info(memory_associations)")
@@ -223,6 +235,21 @@ class DatabaseManager:
             cursor.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
             cursor.execute("DELETE FROM memories_vec WHERE rowid = ?", (memory_id,))
         logger.info(f"Memory {memory_id} deleted successfully.")
+
+    def update_access_timestamp(self, memory_ids: list[int]):
+        """Updates the last_accessed_at timestamp for a batch of memories."""
+        if not memory_ids:
+            return
+        try:
+            with self.write_lock() as cursor:
+                placeholders = ",".join(["?"] * len(memory_ids))
+                cursor.execute(f"""
+                    UPDATE memories SET last_accessed_at = CURRENT_TIMESTAMP 
+                    WHERE id IN ({placeholders})
+                """, tuple(memory_ids))
+            logger.debug(f"Updated last_accessed_at for {len(memory_ids)} memories.")
+        except Exception as e:
+            logger.warning(f"Failed to update access timestamps: {e}")
 
     def update_memory(self, memory_id: int, content_full: str, content_abstract: str, 
                       embedding: list[float], token_count_full: int, token_count_abstract: int,

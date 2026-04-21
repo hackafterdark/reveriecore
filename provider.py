@@ -42,6 +42,7 @@ from .database import DatabaseManager
 from .enrichment import EnrichmentService
 from .retrieval import Retriever
 from .schemas import MemoryType
+from .pruning import MesaService
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,7 @@ class ReverieMemoryProvider(MemoryProvider):
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
         self._sync_thread = None
+        self._mesa_service = None
         self._is_shutdown = False
 
     @property
@@ -113,6 +115,22 @@ class ReverieMemoryProvider(MemoryProvider):
             
             # Register for automatic cleanup on exit
             atexit.register(self.shutdown)
+            
+            # Initialize Mesa Maintenance Service
+            # Pull thresholds from config/kwargs with defaults
+            c_thresh = kwargs.get("mesa_centrality_threshold", 2)
+            a_days = kwargs.get("mesa_retention_days", 14)
+            i_cutoff = kwargs.get("mesa_importance_cutoff", 4.0)
+            interval = kwargs.get("mesa_interval_seconds", 3600)
+            
+            self._mesa_service = MesaService(
+                self._db, 
+                centrality_threshold=int(c_thresh),
+                age_days=int(a_days),
+                importance_cutoff=float(i_cutoff),
+                interval_seconds=int(interval)
+            )
+            self._mesa_service.start()
             
             logger.info(f"ReverieCore initialized for {self.author_id} in {self.owner_id} (Actor: {self.actor_id})")
         except Exception as e:
@@ -453,6 +471,10 @@ class ReverieMemoryProvider(MemoryProvider):
         for t in (self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():
                 t.join(timeout=10.0)
+        
+        if self._mesa_service:
+            self._mesa_service.stop()
+            
         if self._db:
             self._db.close()
 

@@ -240,6 +240,11 @@ class Retriever:
                 current_tokens += chosen_tokens
         
         logger.info(f"Retrieved {len(results)} memories ({current_tokens}/{token_budget} tokens). Strategy: {strategy}, IsFresh: {is_fresh}")
+        
+        # 5. Update Access Timestamps (Asynchronous call to DB)
+        if results:
+            self.db.update_access_timestamp([r["id"] for r in results])
+            
         return results
 
     def find_duplicates(self, query_vector: List[float], threshold: float = 0.95, 
@@ -262,7 +267,7 @@ class Retriever:
         v_query = f"""
             SELECT m.id, m.content_full, v.distance
             FROM memories_vec v JOIN memories m ON v.rowid = m.id
-            WHERE v.embedding MATCH ? AND v.k = ? {filter_clause}
+            WHERE v.embedding MATCH ? AND v.k = ? AND m.status = 'ACTIVE' {filter_clause}
             ORDER BY v.distance ASC
         """
         
