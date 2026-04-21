@@ -1,0 +1,82 @@
+[
+  {
+    "faithfulness": 1.0,
+    "context_precision": 0.9999999999
+  },
+  {
+    "faithfulness": 1.0,
+    "context_precision": 0.99999999995
+  },
+  {
+    "faithfulness": 1.0,
+    "context_precision": 0.0
+  },
+  {
+    "faithfulness": 1.0,
+    "context_precision": 0.0
+  },
+  {
+    "faithfulness": 1.0,
+    "context_precision": 0.0
+  },
+  {
+    "faithfulness": 1.0,
+    "context_precision": 0.9999999999
+  },
+  {
+    "faithfulness": 0.0,
+    "context_precision": 0.0
+  },
+  {
+    "faithfulness": 1.0,
+    "context_precision": 0.0
+  },
+  {
+    "faithfulness": 0.5,
+    "context_precision": 0.0
+  },
+  {
+    "faithfulness": 1.0,
+    "context_precision": 0.0
+  },
+  {
+    "faithfulness": 1.0,
+    "context_precision": 0.0
+  },
+  {
+    "faithfulness": 1.0,
+    "context_precision": 0.3333333333
+  },
+  {
+    "faithfulness": 1.0,
+    "context_precision": 0.0
+  },
+  {
+    "faithfulness": 1.0,
+    "context_precision": 0.3333333333
+  },
+  {
+    "faithfulness": 1.0,
+    "context_precision": 0.49999999995
+  },
+  {
+    "faithfulness": 1.0,
+    "context_precision": 0.0
+  },
+  {
+    "faithfulness": 1.0,
+    "context_precision": 0.0
+  },
+  {
+    "faithfulness": 1.0,
+    "context_precision": 0.99999999995
+  },
+  {
+    "faithfulness": 0.0,
+    "context_precision": 0.0
+  },
+  {
+    "faithfulness": 1.0,
+    "context_precision": 0.9999999999
+  }
+]

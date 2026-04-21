@@ -31,7 +31,8 @@ from reveriecore.enrichment import ConfigLoader
 
 # RAGAS Imports
 from ragas import evaluate
-from ragas.metrics import faithfulness, context_precision
+from ragas.metrics import Faithfulness, ContextPrecision
+from ragas.run_config import RunConfig
 from langchain_openai import ChatOpenAI
 from datasets import Dataset
 
@@ -107,11 +108,14 @@ def run_benchmark():
     
     # 5. Evaluate
     print("\nRunning RAGAS Evaluation... (This may take a few minutes)")
-    # We pass the LLM to RAGAS for scoring
+    # Throttle concurrency to prevent overwhelming the local LLM server
+    run_config = RunConfig(max_workers=2)
+    
     result = evaluate(
         dataset,
-        metrics=[faithfulness, context_precision],
-        llm=llm
+        metrics=[Faithfulness(), ContextPrecision()],
+        llm=llm,
+        run_config=run_config
     )
     
     # 6. Report
@@ -123,8 +127,10 @@ def run_benchmark():
     
     # Save results
     output_path = project_root / "tests" / "benchmark_results.json"
+    # Access the scores dictionary from the EvaluationResult object
+    result_dict = result.scores
     with open(output_path, "w") as f:
-        json.dump(result, f, indent=2)
+        json.dump(result_dict, f, indent=2)
     print(f"Results saved to {output_path}")
 
     provider.shutdown()
