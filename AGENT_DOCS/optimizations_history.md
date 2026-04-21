@@ -42,6 +42,6 @@ We utilized the **RAGAS** framework to measure the impact of these optimizations
 | :--- | :--- | :--- | :--- |
 | **Baseline** | 0.8611 | 0.2976 | Standard Vector RAG. |
 | **Optimized (Graph)** | 0.8778 | 0.3452 | Unconditional 2-hop graph expansion. |
-| **Consolidated (Final)** | **0.8667** | **0.3627** | Intent-driven 1-hop dominance. |
+| **Consolidated (Final)** | **0.8750** | **0.3083** | Intent-driven 1-hop dominance. |
 
 **Key Takeaway:** The move to **1-Hop Dominance** significantly improved **Faithfulness** compared to the mDeBERTa baseline by reducing context-dilution, while the **Technical Boost** preserved our record-high precision levels.
