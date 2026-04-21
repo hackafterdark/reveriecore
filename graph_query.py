@@ -48,13 +48,21 @@ class GraphQueryService:
                     SELECT 
                         CASE WHEN source_id = ? AND source_type = ? THEN target_id ELSE source_id END as next_id,
                         CASE WHEN source_id = ? AND source_type = ? THEN target_type ELSE source_type END as next_type,
-                        confidence_score
+                        confidence_score,
+                        -- Prioritize ENTITY types over MEMORY types for bridging logic
+                        CASE WHEN (CASE WHEN source_id = ? AND source_type = ? THEN target_type ELSE source_type END) = 'ENTITY' THEN 1 ELSE 0 END as type_weight
                     FROM memory_associations
                     WHERE (source_id = ? AND source_type = ?) OR (target_id = ? AND target_type = ?)
-                    ORDER BY confidence_score DESC, rowid ASC
+                    ORDER BY type_weight DESC, confidence_score DESC, rowid ASC
                     LIMIT ?
                 """
-                cursor.execute(neighbors_query, (node_id, node_type, node_id, node_type, node_id, node_type, node_id, node_type, per_node_limit))
+                # Note: We now pass 4 extra params (node_id/type twice more) to calculate the type_weight in the CASE statement
+                cursor.execute(neighbors_query, (
+                    node_id, node_type, node_id, node_type, # for next_id/next_type
+                    node_id, node_type, # for type_weight
+                    node_id, node_type, node_id, node_type, # for WHERE clause
+                    per_node_limit
+                ))
                 
                 for next_id, next_type, _ in cursor.fetchall():
                     if (next_id, next_type) not in visited:
