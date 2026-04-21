@@ -44,4 +44,5 @@ We utilized the **RAGAS** framework to measure the impact of these optimizations
 | **Optimized (Graph)** | 0.8778 | 0.3452 | Unconditional 2-hop graph expansion. |
 | **Consolidated (Final)** | **0.8750** | **0.3083** | Intent-driven 1-hop dominance. |
 
-**Key Takeaway:** The move to **1-Hop Dominance** significantly improved **Faithfulness** compared to the mDeBERTa baseline by reducing context-dilution, while the **Technical Boost** preserved our record-high precision levels.
+> [!NOTE]
+> **Historical Caveat:** Earlier "Baseline" and "Optimized (Graph)" scores were captured during periods of LLM server instability (timeouts and rate-limits). While they remain directionally useful for showing the positive impact of graph-traversal, the **Consolidated (Final)** metrics represent our first fully stabilized ground-truth measurement.
