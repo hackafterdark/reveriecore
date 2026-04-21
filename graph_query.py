@@ -48,10 +48,10 @@ class GraphQueryService:
                     SELECT 
                         CASE WHEN source_id = ? AND source_type = ? THEN target_id ELSE source_id END as next_id,
                         CASE WHEN source_id = ? AND source_type = ? THEN target_type ELSE source_type END as next_type,
-                        confidence
+                        confidence_score
                     FROM memory_associations
                     WHERE (source_id = ? AND source_type = ?) OR (target_id = ? AND target_type = ?)
-                    ORDER BY confidence DESC, rowid ASC
+                    ORDER BY confidence_score DESC, rowid ASC
                     LIMIT ?
                 """
                 cursor.execute(neighbors_query, (node_id, node_type, node_id, node_type, node_id, node_type, node_id, node_type, per_node_limit))

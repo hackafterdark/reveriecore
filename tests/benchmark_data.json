@@ -1,0 +1,82 @@
+[
+  {
+    "question": "How does ReverieCore translate a user's natural language query into a vector representation?",
+    "ground_truth": "The raw query is passed to the SentenceTransformers model (specifically all-MiniLM-L6-v2), which converts it into a 384-dimension vector."
+  },
+  {
+    "question": "What database extension is used for performing nearest-neighbor semantic searches?",
+    "ground_truth": "ReverieCore uses the sqlite-vec extension for performing KNN (K-Nearest Neighbor) similarity search within SQLite."
+  },
+  {
+    "question": "Explain the concept of 'Namespace Isolation' in the retrieval process.",
+    "ground_truth": "Namespace Isolation ensure that an agent only retrieves memories belonging to its current profile (owner_id) or global public facts (privacy='PUBLIC'), preventing data leakage between agent profiles."
+  },
+  {
+    "question": "What happens when the graph retrieval results are fewer than 3?",
+    "ground_truth": "If fewer than 3 results are found via graph-based retrieval (anchoring), the system triggers a Broad Vector Fallback to search the entire vector space."
+  },
+  {
+    "question": "What is 'Bidirectional Traversal' in the context of the knowledge graph?",
+    "ground_truth": "After finding top vector candidates, the system traverses the memory_associations table in both directions (Memory <-> Entity and Entity <-> Entity) to bridge discoveries via shared entities."
+  },
+  {
+    "question": "How does ReverieCore address the 'Hub Problem' in graph discovery?",
+    "ground_truth": "Hub Protection imposes strict per-node limits (top 10 associations) to prevent popular entities from flooding the context window and creating noise."
+  },
+  {
+    "question": "What are the three primary signals used to determine the final rank of a memory?",
+    "ground_truth": "Final ranking is determined by Vector Similarity, BART Importance (semantic score), and Graph Proximity (boost for linked memories)."
+  },
+  {
+    "question": "Describe the 'Comfort Zone' in the adaptive memory budgeting system.",
+    "ground_truth": "The Comfort Zone is active when >50% of tokens remain in the context window. It uses a balanced strategy and prefers full content injection."
+  },
+  {
+    "question": "What is the 'Danger Zone' strategy when remaining tokens are below 20%?",
+    "ground_truth": "In the Danger Zone (<20% tokens remaining), the system uses a 'Critical' strategy and injects ONLY summarized abstracts to save space."
+  },
+  {
+    "question": "How does the fallback mechanism decide between content_full and content_abstract?",
+    "ground_truth": "It first checks if content_full fits within the remaining budget. If not, it checks if content_abstract fits. If neither fits, the memory is skipped."
+  },
+  {
+    "question": "What machine learning model is used for zero-shot classification of memories?",
+    "ground_truth": "The facebook/bart-large-mnli model is used for zero-shot classification of memories into types like TASK, CODE_SNIPPET, or RUNTIME_ERROR."
+  },
+  {
+    "question": "How is the 'Importance Score' of a memory calculated?",
+    "ground_truth": "Importance is calculated using BART zero-shot classification against labels like 'critical', 'important', 'minor', and 'trivial' to weigh the information value."
+  },
+  {
+    "question": "What is the scale of the BART importance score, and what does a 5.0 represent?",
+    "ground_truth": "The scale is 1.0 to 5.0. A 5.0 represents a 'critical' memory that is permanent and exempt from temporal decay."
+  },
+  {
+    "question": "How are 'Canonical Entities' extracted from raw memories?",
+    "ground_truth": "Canonical entities are extracted using an LLM pass that identifies technical nouns (Files, Classes, Tools) and stores them in the entities table with deduplication."
+  },
+  {
+    "question": "What are the allowed relationship types (AssociationType) between entities?",
+    "ground_truth": "Based on documentation, allowed relationship types include PART_OF, DEPENDS_ON, and MENTIONS."
+  },
+  {
+    "question": "Name the four tables that make up the ReverieCore database schema.",
+    "ground_truth": "The four main tables are: memories, entities, memory_associations, and the virtual table memories_vec."
+  },
+  {
+    "question": "What specifically is stored in the author_id, owner_id, and actor_id fields?",
+    "ground_truth": "author_id identifies the human user; owner_id identifies the specific agent profile (Namespace); and actor_id identifies the service or agent that wrote the data."
+  },
+  {
+    "question": "What embedding model is used, and what is its output dimension?",
+    "ground_truth": "The all-MiniLM-L6-v2 model is used, which produces embeddings with 384 dimensions."
+  },
+  {
+    "question": "How long is the suggested expiration for memories with an importance score below 3.0?",
+    "ground_truth": "Memories with importance below 3.0 are considered transient and are suggested to expire after 7 days."
+  },
+  {
+    "question": "What triggers 'Enhanced Graph Extraction' for a memory?",
+    "ground_truth": "Enhanced Graph Extraction is triggered automatically when a memory's importance score is calculated to be 3.0 or higher."
+  }
+]
