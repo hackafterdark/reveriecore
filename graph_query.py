@@ -10,18 +10,27 @@ class GraphQueryService:
     def __init__(self, db_manager):
         self.db = db_manager
 
-    def get_related_memories(self, start_memory_ids: List[int], depth: int = 2, per_node_limit: int = 10) -> List[int]:
+    def get_related_memories(self, start_memory_ids: List[int], anchor_entities: List[str] = None, gravity: float = 1.0, depth: int = 2, per_node_limit: int = 10) -> List[int]:
         """
         Traverses the graph to find memories linked to the start nodes.
         Path: Memory <-> Entity <-> Entity <-> Memory
         
         Uses a step-by-step Python traversal with SQL neighbor lookups 
         to ensure 'Hub Protection' can be reliably enforced.
+
+        Gravity: A multiplier for associations connected to query anchors.
         """
         if not start_memory_ids:
             return []
             
         cursor = self.db.get_cursor()
+
+        # Resolve anchor entities to IDs
+        anchor_ids = set()
+        if anchor_entities:
+            placeholders = ",".join(["?"] * len(anchor_entities))
+            cursor.execute(f"SELECT id FROM entities WHERE name IN ({placeholders})", tuple(anchor_entities))
+            anchor_ids = {row[0] for row in cursor.fetchall()}
         
         # Track state
         visited = set()
@@ -44,27 +53,42 @@ class GraphQueryService:
             # Process current layer in batches for efficiency (optional, but good)
             # For simplicity, we'll do one query for all nodes in the current layer
             for node_id, node_type in current_layer:
-                neighbors_query = """
+                # anchor_id_placeholders for the CASE statement
+                anchor_list = list(anchor_ids) if anchor_ids else [-1]
+                placeholders = ",".join(["?"] * len(anchor_list))
+
+                neighbors_query = f"""
                     SELECT 
                         CASE WHEN source_id = ? AND source_type = ? THEN target_id ELSE source_id END as next_id,
                         CASE WHEN source_id = ? AND source_type = ? THEN target_type ELSE source_type END as next_type,
                         confidence_score,
                         -- Prioritize ENTITY types over MEMORY types for bridging logic
-                        CASE WHEN (CASE WHEN source_id = ? AND source_type = ? THEN target_type ELSE source_type END) = 'ENTITY' THEN 1 ELSE 0 END as type_weight
+                        CASE WHEN (CASE WHEN source_id = ? AND source_type = ? THEN target_type ELSE source_type END) = 'ENTITY' THEN 1 ELSE 0 END as type_weight,
+                        -- Anchor check
+                        CASE WHEN (CASE WHEN source_id = ? AND source_type = ? THEN target_id ELSE source_id END) IN ({placeholders}) 
+                             AND (CASE WHEN source_id = ? AND source_type = ? THEN target_type ELSE source_type END) = 'ENTITY'
+                             THEN 1 ELSE 0 END as is_anchor,
+                        rowid
                     FROM memory_associations
                     WHERE (source_id = ? AND source_type = ?) OR (target_id = ? AND target_type = ?)
-                    ORDER BY type_weight DESC, confidence_score DESC, rowid ASC
-                    LIMIT ?
                 """
-                # Note: We now pass 4 extra params (node_id/type twice more) to calculate the type_weight in the CASE statement
-                cursor.execute(neighbors_query, (
+                # Combined score: confidence * (1 + (is_anchor * gravity))
+                # We do this in Python or via a slightly more complex SQL. 
+                # Let's do it in SQL:
+                neighbors_query = f"SELECT next_id, next_type, confidence_score, type_weight, (confidence_score * (1 + (is_anchor * ?))) as discovery_score, rowid FROM ({neighbors_query}) ORDER BY type_weight DESC, discovery_score DESC, rowid ASC LIMIT ?"
+                
+                params = [
                     node_id, node_type, node_id, node_type, # for next_id/next_type
                     node_id, node_type, # for type_weight
-                    node_id, node_type, node_id, node_type, # for WHERE clause
-                    per_node_limit
-                ))
+                    node_id, node_type, node_id, node_type, # for is_anchor
+                ]
+                params.extend(anchor_list) # for the IN clause
+                params.extend([node_id, node_type, node_id, node_type]) # for WHERE clause
+                params.extend([gravity, per_node_limit]) # for final sort/limit
+
+                cursor.execute(neighbors_query, tuple(params))
                 
-                for next_id, next_type, _ in cursor.fetchall():
+                for next_id, next_type, _, _, _ in cursor.fetchall():
                     if (next_id, next_type) not in visited:
                         visited.add((next_id, next_type))
                         next_layer.append((next_id, next_type))

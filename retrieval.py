@@ -36,10 +36,42 @@ class Retriever:
             logger.debug(f"Decay calculation failed: {e}")
             return 1.0
 
-    def _detect_freshness(self, query: str) -> bool:
-        """Detects if the user wants a 'clean slate' / 'new idea'."""
-        keywords = ["clean slate", "new idea", "fresh start", "forget history", "new project"]
-        return any(k in query.lower() for k in keywords)
+    def _calculate_gravity(self, query: str, primary_candidates: List[Dict[str, Any]]) -> float:
+        """
+        Calculates dynamic gravity based on query intent and result context.
+        - High Precision Intent: Gravity 1.0 (Anchored)
+        - Synthesis Intent: Gravity 0.8 (Balanced)
+        - Exploration Intent: Gravity 0.5 (Discoverable)
+        - Knowledge Boost: +0.1 if results contain code/architecture.
+        """
+        if not self.enrichment:
+            return 1.0
+            
+        intent_scores = self.enrichment.classify_intent(query)
+        
+        # Normalize scores so they sum to 1.0
+        total_score = sum(intent_scores.values())
+        if total_score > 0:
+            for k in intent_scores:
+                intent_scores[k] /= total_score
+        
+        # Weighted average
+        base_gravity = (
+            (intent_scores.get('retrieving specific facts or entities', 0) * 1.0) +
+            (intent_scores.get('synthesizing related information', 0) * 0.8) +
+            (intent_scores.get('exploring open-ended possibilities', 0) * 0.5)
+        )
+        
+        # Technical boost
+        boost = 0.0
+        tech_markers = ["class ", "def ", "struct ", "interface ", "schema", "architecture", "diagram"]
+        for c in primary_candidates:
+            content = c.get("content_full", "").lower()
+            if "```" in content or any(m in content for m in tech_markers):
+                boost = 0.1
+                break
+                
+        return min(1.1, base_gravity + boost)
 
     def search(self, 
                query_vector: List[float], 
@@ -65,7 +97,10 @@ class Retriever:
         
         status_filter = "('ACTIVE')" if not include_archived else "('ACTIVE', 'ARCHIVED')"
         
-        is_fresh = self._detect_freshness(query_text)
+        # Detect if 'clean slate' requested (Bypass anchors/gravity)
+        keywords = ["clean slate", "new idea", "fresh start", "forget history", "new project"]
+        is_fresh = any(k in query_text.lower() for k in keywords)
+        
         anchors = []
         if not is_fresh and self.enrichment:
             anchors = self.enrichment.extract_query_anchors(query_text)
@@ -135,7 +170,9 @@ class Retriever:
         if not is_fresh:
             seed_ids = [c["id"] for c in sorted(candidates, key=lambda x: x["score"], reverse=True)[:3]]
             if seed_ids:
-                linked_ids = self.graph.get_related_memories(seed_ids)
+                # Calculate dynamic gravity before expansion
+                gravity = self._calculate_gravity(query_text, candidates[:5])
+                linked_ids = self.graph.get_related_memories(seed_ids, anchor_entities=anchors, gravity=gravity)
                 new_ids = [i for i in linked_ids if i not in seen_ids]
                 if new_ids:
                     id_placeholders = ",".join(["?"] * len(new_ids))

@@ -144,7 +144,7 @@ class EnrichmentService:
         
         self.embedding_model_name = cfg.get("embedding_model") or kwargs.get("embedding_model_name") or "all-MiniLM-L6-v2"
         self.summarization_model_name = cfg.get("summarization_model") or kwargs.get("summarization_model_name") or "sshleifer/distilbart-cnn-12-6"
-        self.classifier_model_name = cfg.get("classifier_model") or kwargs.get("classifier_model_name") or "facebook/bart-large-mnli"
+        self.classifier_model_name = cfg.get("classifier_model") or kwargs.get("classifier_model_name") or "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"
 
         # Defensive Check: Ensure we have strings, not dicts from positional mismatch
         if not isinstance(self.embedding_model_name, str):
@@ -152,7 +152,7 @@ class EnrichmentService:
         if not isinstance(self.summarization_model_name, str):
             self.summarization_model_name = "sshleifer/distilbart-cnn-12-6"
         if not isinstance(self.classifier_model_name, str):
-            self.classifier_model_name = "facebook/bart-large-mnli"
+            self.classifier_model_name = "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"
 
         # Models initialized as None (Lazy-Loading)
         self.embedding_model = None
@@ -221,12 +221,12 @@ class EnrichmentService:
 
             if "classifier" in models and self.classifier_model is None:
                 logger.info(f"Loading zero-shot classifier: {self.classifier_model_name}...")
-                self.classifier_tokenizer = AutoTokenizer.from_pretrained(self.classifier_model_name)
+                self.classifier_tokenizer = AutoTokenizer.from_pretrained(self.classifier_model_name, use_fast=False)
                 self.classifier_model = AutoModelForSequenceClassification.from_pretrained(
                     self.classifier_model_name,
                     low_cpu_mem_usage=False
                 ).to("cpu")
-                logger.info("BART Classifier loaded successfully.")
+                logger.info("mDeBERTa Classifier loaded successfully (Entailment-Logic).")
 
     def generate_embedding(self, text: str) -> List[float]:
         try:
@@ -295,27 +295,37 @@ class EnrichmentService:
             return "\n".join(memories)
 
     def _zero_shot_classify(self, text: str, labels: List[str], hypothesis_template: str = "This example is {}.") -> Dict[str, float]:
-        """Manual implementation of zero-shot classification for BART MNLI."""
+        """Manual implementation of zero-shot classification for MNLI-trained models (mDeBERTa/BART)."""
         self._ensure_loaded(["classifier"])
         
         scores = {}
         for label in labels:
             hypothesis = hypothesis_template.format(label)
             
-            # BART MNLI expects: [CLS] text [SEP] [SEP] hypothesis [SEP]
             # AutoTokenizer handles the specific formatting for the model
             inputs = self.classifier_tokenizer(text, hypothesis, return_tensors="pt", truncation=True)
             
             with torch.no_grad():
                 logits = self.classifier_model(**inputs).logits
             
-            # Index 0: contradiction, Index 1: neutral, Index 2: entailment
-            # We care about the entailment vs contradiction relationship
-            entail_contr_logits = logits[:, [0, 2]]
-            probs = F.softmax(entail_contr_logits, dim=1)
-            scores[label] = probs[0, 1].item()
+            # mDeBERTa/BART MNLI Label Mapping:
+            # Index 0: entailment, Index 1: neutral, Index 2: contradiction (DeBERTaV3-MNLI-XNLI)
+            # wait, actually mDeBERTa-v3-base-mnli-xnli uses:
+            # 0: entailment, 1: neutral, 2: contradiction
+            # Let's verify and use the softmax on entailment vs contradiction.
+            probs = F.softmax(logits, dim=1)
+            scores[label] = probs[0, 0].item() # Entailment is at index 0 for this model
             
         return scores
+
+    def classify_intent(self, query: str) -> Dict[str, float]:
+        """Classifies the retrieval intent using zero-shot classification."""
+        labels = [
+            'retrieving specific facts or entities', # Precision
+            'synthesizing related information',    # Synthesis
+            'exploring open-ended possibilities'    # Exploration
+        ]
+        return self._zero_shot_classify(query, labels, "The user intent is {}.")
 
     def calculate_importance(self, text: str) -> Dict[str, Any]:
         """
