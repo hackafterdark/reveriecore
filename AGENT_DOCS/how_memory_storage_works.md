@@ -51,3 +51,8 @@ class MemoryType(Enum):
 | **Hermes Agent** | **Client** | Decides *what* to save and *when*. |
 | **Python Plugin** | **Intelligence Layer** | Decides the *type*, calculates *score*, and runs *embeddings*. |
 | **SQLite + vec0** | **Persistence Layer** | Stores the structured relational data and vector indices. |
+| **MesaService** | **Maintenance Layer** | Background engine that prunes noise and archives stale data. |
+
+### 🧹 Post-Storage: The Mesa Maintenance Cycle
+
+Storing a memory is only the first half of the lifecycle. Once a memory is saved, the **MesaService** begins monitoring it. If a memory remains low-importance and is not accessed or linked to other facts within 14 days, it is automatically transitioned to `ARCHIVED` status to prevent "Brain Rot" and ensure long-term retrieval remains high-signal.

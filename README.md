@@ -16,6 +16,7 @@
 - **🌐 Augmented Knowledge**: Automatically extracts canonical entities (Files, Tools, API nodes) and maps their relationships.
 - **🛡️ Namespace Isolation**: Robust identity model ensuring profile-based sandboxing and privacy.
 - **📦 Zero-Config Connectivity**: Dynamically discovers your LLM provider (Llama Swap, Ollama, OpenAI) from the Hermes `config.yaml`.
+- **🧹 Active Cognitive Maintenance**: Background `MesaService` automatically archives noise and sanitizes your context window.
 
 ---
 
@@ -67,7 +68,25 @@ python3 tests/graph_status.py
 ```
 
 ### 4. Configuration
-Reverie Core automatically reads your active LLM provider (base_url, model) from `~/.hermes/config.yaml`. No manual configuration is required unless you want to override the `importance_score` thresholds in `enrichment.py`.
+Reverie Core automatically reads your active LLM provider from `~/.hermes/config.yaml`. You can tune the **MesaService** maintenance engine by adding the following keys under the `memory:` section:
+
+#### Tuning Parameters
+| Parameter | Default | Description |
+| :--- | :--- | :--- |
+| `mesa_retention_days` | `14` | Days since last access before a memory is considered "stale". |
+| `mesa_importance_cutoff` | `4.0` | Minimum importance score required to remain "Active". |
+| `mesa_centrality_threshold` | `2` | Minimum graph edges required to prevent archiving. |
+| `mesa_interval_seconds` | `3600` | Frequency of maintenance checks in seconds. |
+| `mesa_purge_enabled` | `True` | Whether Tier 2 (Permanent Deletion) is active. |
+
+#### Example `config.yaml`
+```yaml
+memory:
+  provider: reveriecore
+  mesa_retention_days: 7       # Keep only the last week of low-signal data
+  mesa_importance_cutoff: 4.5  # High-bar for active memory
+  mesa_interval_seconds: 1800  # Check every 30 minutes
+```
 
 ---
 
@@ -80,6 +99,7 @@ For deep dives into the architecture and theory behind Reverie Core, see the [AG
 - [Knowledge Graph Mechanics](AGENT_DOCS/knowledge_graph_mechanics.md)
 - [Storage & Enrichment](AGENT_DOCS/how_memory_storage_works.md)
 - [Importance Score Mechanics](AGENT_DOCS/memory_importance_score.md)
+- [Active Maintenance (Mesa)](AGENT_DOCS/how_mesa_works.md)
 - [Product Requirements (PRD)](PRD/PRD.md)
 
 ---

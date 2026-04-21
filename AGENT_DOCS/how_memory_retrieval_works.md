@@ -19,13 +19,14 @@ The raw query is passed to `sentence-transformers`. This converts the agent's in
 Using the `sqlite-vec` extension, we perform a nearest-neighbor search on the `memories_vec` virtual table while enforcing **Namespace Isolation**.
 - **The SQL:** 
   ```sql
-  SELECT rowid, distance 
-  FROM memories_vec 
-  WHERE embedding MATCH $V_q$ 
+  SELECT m.id, v.distance 
+  FROM memories_vec v JOIN memories m ON v.rowid = m.id
+  WHERE v.embedding MATCH $V_q$ 
     AND (m.owner_id = $profile OR m.privacy = 'PUBLIC')
-    AND k = $limit * 2;
+    AND m.status = 'ACTIVE'
+    AND v.k = $limit * 2;
   ```
-- This ensures an agent only retrieves memories belonging to its current Profile, or global Public facts.
+- This ensures an agent only retrieves memories belonging to its current Profile or global Public facts, while automatically skipping "Archived" or "Superseded" noise.
 
 #### 3. Graph Augmentation (Graph-RAG)
 Similarity isn't everything. A memory that is semantically similar to your query might be linked to a vital "hidden" fact that doesn't share keywords. 
@@ -40,6 +41,9 @@ Final ranking combines three signals:
 3. **Graph Proximity**: A boost for memories discovered via graph links.
 
 $$\text{Final Rank} = (W_1 \times \text{Similarity}) + (W_2 \times \text{Importance}) + \text{Graph Boost}$$
+
+#### 5. Recency Protection (The Maintenance Signal)
+Every time a memory is successfully retrieved, the system updates its `last_accessed_at` timestamp. This acts as a "Stay Alive" signal to the **MesaService**, shielding active context from background pruning even if the memory has low objective importance.
 
 ### 📊 Context Hub: Adaptive Memory Budgeting
 

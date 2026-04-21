@@ -19,22 +19,6 @@ We define three primary categories of anchors used to narrow the search space:
 * **`memory_type`**: Hard classification (e.g., `TASK`, `RUNTIME_ERROR`) to allow deterministic filtering.
 * **Entities & Triples**: Hard-coded relationships extracted during enrichment to allow "Entity-Linked" retrieval.
 
-## 3. Implementation Plan
-
-### Phase 1: Scoring & Ranking (The `Retriever` Layer)
-* **Requirement**: Modify the `Retriever` query to move from pure `cosine_similarity` to a weighted `final_score`.
-* **Algorithm**: 
-    `final_score = (similarity * w1) + (importance * w2) + (time_decay * w3)`
-* **Action**: Implement the `time_decay` function as a logarithmic function based on `learned_at` relative to `CURRENT_TIMESTAMP`.
-
-### Phase 2: Anchor-Aware Queries
-* **Requirement**: Add optional filtering arguments to the `search()` method.
-* **Signature**: 
-    `def search(self, query: str, workspace: str = None, session_ids: list = None, type_filter: str = None):`
-* **Action**: If parameters are provided, dynamically inject `WHERE` clauses into the SQL query before performing the `vec` search.
-
-### Phase 3: The "Closing Summary" (Session Solidification)
-* **Requirement**: Automate the creation of high-importance anchor points.
 ## 3. Implemented Architecture
 
 ### Phase 1: The Multi-Dimensional Scoring Engine
@@ -54,19 +38,25 @@ To prevent "Behavioral Anchoring" (where the agent is trapped by its history), t
 - **Keywords**: "clean slate", "fresh start", "forget history", "new project".
 - **Operation**: If detected, the `Retriever` bypasses the Knowledge Graph and Temporal Decay, performing a pure semantic slice of the vector index.
 
+### Phase 4: Active Cognitive Maintenance (Mesa)
+To ensure the "Active" database remains high-signal over months of operations:
+- **Pruning**: Background service filters for memories with `importance < 4.0` and `edges < 2`.
+- **Status Filter**: Retrieval is hard-scoped to `status = 'ACTIVE'`.
+- **Relational Re-weighting**: Retrieval search hits update `last_accessed_at`, creating a dynamic "Recency Guard" that prevents active project context from being archived.
+
 ---
 
 ## 4. Future Roadmap: The "Solidification" Phase
 
-### A. Session Solidification (The "Archive" Step)
-Automate the creation of high-level anchor points after a session ends:
-- **Trigger**: Inactivity > 30 minutes OR manual "Wrap Up" command.
-- **Action**: The LLM summarizes the key `TASK` and `LEARNING_EVENT` entries into a single high-importance `OBSERVATION` memory linked to all entities mentioned.
+### A. Cluster Consolidation (The "Compression" Step)
+Automate the creation of high-level anchor points when the graph becomes too dense:
+- **Trigger**: Entity high-centrality threshold met.
+- **Action**: The LLM summarizes clusters of related memories into a single high-importance `OBSERVATION` summary, then archives the constituent "source" memories.
 
 ### B. Influence Ranking (Feedback Loops)
 - **Concept**: If the agent successfully answers a query using a specific memory, that memory's `importance_score` should experience a small "Relational Boost." 
 - **Goal**: Popular/useful memories become stronger anchors over time.
 
-### C. Negative Anchors
-- **Concept**: Explicitly mark memories that are "Outdated" or "Superseded."
+### C. Explicit Negative Anchors
+- **Concept**: Manually mark memories as "Outdated" or "Superseded" beyond automatic pruning.
 - **Logic**: During Graph-Led Search, if a node is linked via a `SUPERSEDES` edge, the retriever should prioritize the target and suppress the source.
