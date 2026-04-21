@@ -241,3 +241,45 @@ class Retriever:
         
         logger.info(f"Retrieved {len(results)} memories ({current_tokens}/{token_budget} tokens). Strategy: {strategy}, IsFresh: {is_fresh}")
         return results
+
+    def find_duplicates(self, query_vector: List[float], threshold: float = 0.95, 
+                        allowed_owners: List[str] = None) -> List[Dict[str, Any]]:
+        """
+        Finds memories with high cosine similarity for deduplication/merging.
+        Used during sync_turn to maintain a canonical knowledge base.
+        """
+        cursor = self.db.get_cursor()
+        import sqlite_vec
+        
+        # We check top 5 candidates to see if any cross the threshold
+        v_params = [sqlite_vec.serialize_float32(query_vector), 5]
+        filter_clause = ""
+        if allowed_owners:
+            placeholders = ",".join(["?"] * len(allowed_owners))
+            filter_clause = f"AND (m.owner_id IN ({placeholders}) OR m.privacy = 'PUBLIC')"
+            v_params.extend(allowed_owners)
+            
+        v_query = f"""
+            SELECT m.id, m.content_full, v.distance
+            FROM memories_vec v JOIN memories m ON v.rowid = m.id
+            WHERE v.embedding MATCH ? AND v.k = ? {filter_clause}
+            ORDER BY v.distance ASC
+        """
+        
+        duplicates = []
+        try:
+            cursor.execute(v_query, v_params)
+            for row in cursor.fetchall():
+                m_id, content, dist = row
+                # Convert distance to similarity (1.0 is exact match)
+                similarity = 1.0 / (1.0 + dist)
+                if similarity >= threshold:
+                    duplicates.append({
+                        "id": m_id, 
+                        "content_full": content, 
+                        "similarity": similarity
+                    })
+        except Exception as e:
+            logger.error(f"Duplicate search failed: {e}")
+            
+        return duplicates

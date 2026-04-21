@@ -202,7 +202,7 @@ class ReverieMemoryProvider(MemoryProvider):
                     allowed_owners=[self.owner_id, "PERSONAL_WORKSPACE"]
                 )
                 if results:
-                    lines = [f"- {r['content_full']}" for r in results]
+                    lines = [f"- {r['content']}" for r in results]
                     with self._prefetch_lock:
                         self._prefetch_result = "\n".join(lines)
             except Exception as e:
@@ -223,15 +223,56 @@ class ReverieMemoryProvider(MemoryProvider):
                 
                 # 1. Intelligence Layer Analysis
                 mem_type = self._enrichment.classify_type(full_text)
-                importance = self._enrichment.calculate_importance(full_text)["score"]
+                importance_data = self._enrichment.calculate_importance(full_text)
+                importance = importance_data["score"]
                 profile = self._enrichment.generate_semantic_profile(full_text)
                 vec = self._enrichment.generate_embedding(profile) # Embed the profile for cleaner signal
                 
+                # 2. Canonical Merge Check
+                # Search for duplicates with > 0.95 similarity
+                duplicates = self._retriever.find_duplicates(
+                    vec, 
+                    threshold=0.95, 
+                    allowed_owners=[self.owner_id, "PERSONAL_WORKSPACE"]
+                )
+                
+                if duplicates:
+                    dup = duplicates[0]
+                    dup_id = dup["id"]
+                    logger.info(f"Canonical Merge: Match found (ID: {dup_id}, Similarity: {dup['similarity']:.3f}). Synthesizing...")
+                    
+                    # Merge content using LLM synthesis
+                    merged_text = self._enrichment.synthesize_memories(
+                        [dup["content_full"], full_text], 
+                        "canonical_knowledge"
+                    )
+                    
+                    # Re-analyze synthesized content
+                    new_profile = self._enrichment.generate_semantic_profile(merged_text)
+                    new_vec = self._enrichment.generate_embedding(new_profile)
+                    new_importance = self._enrichment.calculate_importance(merged_text)["score"]
+                    
+                    # New Token Counts
+                    tc_full = self._enrichment.count_tokens(merged_text)
+                    tc_abstract = self._enrichment.count_tokens(new_profile)
+                    
+                    self._db.update_memory(
+                        dup_id, 
+                        merged_text, 
+                        new_profile, 
+                        new_vec, 
+                        tc_full, 
+                        tc_abstract,
+                        importance_score=new_importance
+                    )
+                    logger.info(f"Memory {dup_id} Canonicalized and Updated.")
+                    return # Exit background thread, merge complete
+
+                # 3. Standard Relational Store (if no merge found)
                 # Token Counts
                 tc_full = self._enrichment.count_tokens(full_text)
                 tc_abstract = self._enrichment.count_tokens(profile)
                 
-                # 2. Relational Store
                 # Fixed: Using write_lock transaction for safety
                 with self._db.write_lock() as cursor:
                     cursor.execute("""
@@ -253,14 +294,14 @@ class ReverieMemoryProvider(MemoryProvider):
                     
                     mem_id = cursor.lastrowid
                     
-                    # 3. Vector Store
+                    # 4. Vector Store
                     import sqlite_vec
                     cursor.execute("""
                         INSERT INTO memories_vec (rowid, embedding)
                         VALUES (?, ?)
                     """, (mem_id, sqlite_vec.serialize_float32(vec)))
                     
-                # 4. Graph Extraction (Triggered if high importance)
+                # 5. Graph Extraction (Triggered if high importance)
                 if importance >= 3.0:
                     logger.info(f"Triggering enhanced graph extraction for memory {mem_id}")
                     # This is still inside the _sync thread, which is backgrounded
@@ -268,8 +309,6 @@ class ReverieMemoryProvider(MemoryProvider):
 
                 # debug
                 actual_path = Path(self._db.db_path).resolve()
-                logger.info(f"DEBUG: Successfully committed to database at: {actual_path}")
-                
                 logger.debug(f"Memory saved: ID {mem_id}, Type {mem_type.value}, Score {importance}")
                 
             except Exception as e:
@@ -283,11 +322,125 @@ class ReverieMemoryProvider(MemoryProvider):
         self._sync_thread.start()
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        # REMOVED: Custom search tool removed to restore native Brain Icon experience
-        return []
+        """Provides the memory management tool schema to Hermes."""
+        return [
+            {
+                "name": "memory",
+                "description": "Exposes manual control over the ReverieCore memory vault. Use this to delete or replace specific records after finding them via semantic search.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["add", "remove", "replace"],
+                            "description": "Selected action. Note: 'remove' and 'replace' require a search step first if memory_id is unknown."
+                        },
+                        "text": {
+                            "type": "string",
+                            "description": "The memory content (for 'add') or search query (for 'remove'/'replace') to identify potential candidates."
+                        },
+                        "memory_id": {
+                            "type": "integer",
+                            "description": "The explicit database ID of the memory to remove or replace (obtained via search)."
+                        },
+                        "replacement": {
+                            "type": "string",
+                            "description": "The new content to use when replacing an existing memory."
+                        }
+                    },
+                    "required": ["action"]
+                }
+            }
+        ]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
-        return tool_error(f"Unknown tool: {tool_name}")
+        if tool_name != "memory":
+            return tool_error(f"Unknown tool: {tool_name}")
+
+        action = args.get("action")
+        text = args.get("text", "")
+        mem_id = args.get("memory_id")
+        replacement = args.get("replacement")
+
+        if action == "add":
+            if not text:
+                return tool_error("Text content is required for the 'add' action.")
+            # Map manual 'add' to sync_turn for standard processing
+            self.sync_turn("Manual Entry", text)
+            return "Memory has been successfully queued for enrichment and storage."
+
+        if action == "remove":
+            if not mem_id:
+                # Stage 1: Search for candidates
+                if not text:
+                    return tool_error("Search text is required to find memories for removal.")
+                return self._handle_management_search(text, "remove")
+            else:
+                # Stage 2: Confirmed removal by ID
+                memory = self._db.get_memory(mem_id)
+                if not memory:
+                    return tool_error(f"Memory ID {mem_id} not found.")
+                self._db.delete_memory(mem_id)
+                return f"Memory ID {mem_id} ('{memory['content_full'][:50]}...') has been permanently deleted."
+
+        if action == "replace":
+            if not mem_id:
+                # Stage 1: Search for candidates
+                if not text:
+                    return tool_error("Search text is required to find memories for replacement.")
+                return self._handle_management_search(text, "replace")
+            else:
+                # Stage 2: Confirmed replacement by ID
+                if not replacement:
+                    return tool_error("Replacement text is required for the 'replace' action.")
+                
+                existing = self._db.get_memory(mem_id)
+                if not existing:
+                    return tool_error(f"Memory ID {mem_id} not found.")
+
+                # Re-enrich the replacement text
+                profile = self._enrichment.generate_semantic_profile(replacement)
+                vec = self._enrichment.generate_embedding(profile)
+                importance = self._enrichment.calculate_importance(replacement)["score"]
+                tc_f = self._enrichment.count_tokens(replacement)
+                tc_a = self._enrichment.count_tokens(profile)
+                
+                self._db.update_memory(mem_id, replacement, profile, vec, tc_f, tc_a, importance_score=importance)
+                return f"Memory ID {mem_id} has been successfully replaced with the new content."
+
+        return tool_error(f"Unsupported memory action: {action}")
+
+    def _handle_management_search(self, query: str, action_type: str) -> str:
+        """Helper to find top 3 semantic matches for confirmation workflow."""
+        # 1. Embed query intent
+        vec = self._enrichment.generate_embedding(query)
+        # 2. Search
+        # We use a large token budget to ensure we get meaningful snippets
+        results = self._retriever.search(
+            vec, 
+            query_text=query,
+            limit=3, 
+            token_budget=4000, 
+            allowed_owners=[self.owner_id, "PERSONAL_WORKSPACE"]
+        )
+        
+        if not results:
+            return f"No memories found matching '{query}'. Please try more specific terms."
+            
+        lines = [f"### Potential Matches for {action_type.capitalize()}"]
+        lines.append(f"I found the following memories that might match your request. To proceed, call the `memory` tool again with the specific `memory_id` and action='{action_type}'.")
+        lines.append("")
+        for res in results:
+            # Clean snippet for display
+            snippet = res["content"].split("\n")[0] # Just the first line/user part often
+            if len(snippet) > 150:
+                snippet = snippet[:147] + "..."
+            
+            lines.append(f"- **ID: {res['id']}** (Confidence: {res['score']:.2f})")
+            lines.append(f"  Snippet: \"{snippet}\"")
+            lines.append("")
+            
+        return "\n".join(lines)
 
     def shutdown(self) -> None:
         if self._is_shutdown:

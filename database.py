@@ -5,6 +5,7 @@ import json
 import threading
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +214,61 @@ class DatabaseManager:
         cursor.execute("DELETE FROM memory_associations WHERE evidence_memory_id = ?", (memory_id,))
         self.conn.commit()
         logger.debug(f"Purged associations for memory {memory_id}")
+
+    def delete_memory(self, memory_id: int):
+        """Atomically removes a memory and its vector index."""
+        with self.write_lock() as cursor:
+            # memory_associations has FOREIGN KEY (evidence_memory_id) REFERENCES memories(id) ON DELETE CASCADE
+            # So associations will be cleaned up automatically.
+            cursor.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+            cursor.execute("DELETE FROM memories_vec WHERE rowid = ?", (memory_id,))
+        logger.info(f"Memory {memory_id} deleted successfully.")
+
+    def update_memory(self, memory_id: int, content_full: str, content_abstract: str, 
+                      embedding: list[float], token_count_full: int, token_count_abstract: int,
+                      importance_score: float = None):
+        """Updates an existing memory and its vector representation."""
+        import sqlite_vec
+        with self.write_lock() as cursor:
+            if importance_score is not None:
+                cursor.execute("""
+                    UPDATE memories SET 
+                        content_full = ?, content_abstract = ?, 
+                        token_count_full = ?, token_count_abstract = ?,
+                        importance_score = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (content_full, content_abstract, token_count_full, token_count_abstract, importance_score, memory_id))
+            else:
+                cursor.execute("""
+                    UPDATE memories SET 
+                        content_full = ?, content_abstract = ?, 
+                        token_count_full = ?, token_count_abstract = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (content_full, content_abstract, token_count_full, token_count_abstract, memory_id))
+                
+            cursor.execute("""
+                UPDATE memories_vec SET embedding = ? WHERE rowid = ?
+            """, (sqlite_vec.serialize_float32(embedding), memory_id))
+        logger.info(f"Memory {memory_id} updated successfully.")
+
+    def get_memory(self, memory_id: int) -> Optional[dict]:
+        """Fetches a single memory record by ID."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT id, content_full, content_abstract, importance_score, owner_id 
+            FROM memories WHERE id = ?
+        """, (memory_id,))
+        row = cursor.fetchone()
+        if row:
+            return {
+                "id": row[0],
+                "content_full": row[1],
+                "content_abstract": row[2],
+                "importance_score": row[3],
+                "owner_id": row[4]
+            }
+        return None
 
     def get_cursor(self):
         return self.conn.cursor()
