@@ -16,11 +16,11 @@ sys.modules["hermes_constants"] = MagicMock()
 sys.modules["tools"] = MagicMock()
 sys.modules["tools.registry"] = MagicMock()
 
-from database import DatabaseManager
-from enrichment import EnrichmentService
-from pruning import MesaService
-from retrieval import Retriever
-from schemas import MemoryType
+from reveriecore.database import DatabaseManager
+from reveriecore.enrichment import EnrichmentService
+from reveriecore.pruning import MesaService
+from reveriecore.retrieval import Retriever
+from reveriecore.schemas import MemoryType
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

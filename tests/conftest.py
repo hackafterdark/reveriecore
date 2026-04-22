@@ -3,9 +3,12 @@ import os
 import sys
 from pathlib import Path
 
-# Add the parent directory of reveriecore to path so we can import it
-# assuming tests/ is inside reveriecore/
-sys.path.append(str(Path(__file__).parent.parent.parent))
+# Add the project root to sys.path
+# If this file is at .../reveriecore/tests/conftest.py
+# The project root is two levels up: .../reveriecore/
+root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
 
 from reveriecore.database import DatabaseManager
 from reveriecore.enrichment import EnrichmentService
