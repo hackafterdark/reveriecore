@@ -3,8 +3,8 @@ import json
 from datetime import datetime
 import logging
 from typing import List, Dict, Any, Optional
-from database import DatabaseManager
-from graph_query import GraphQueryService
+from .database import DatabaseManager
+from .graph_query import GraphQueryService
 
 logger = logging.getLogger(__name__)
 

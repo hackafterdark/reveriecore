@@ -11,7 +11,7 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoModelForSeque
 import torch
 import torch.nn.functional as F
 from sentence_transformers import SentenceTransformer
-from schemas import MemoryType, AssociationType
+from .schemas import MemoryType, AssociationType
 
 logger = logging.getLogger(__name__)
 

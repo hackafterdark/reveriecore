@@ -28,21 +28,15 @@ logger = logging.getLogger(__name__)
 # 1. Immediate suppression for the specific pkg_resources warning
 warnings.filterwarnings("ignore", category=UserWarning, module="pkg_resources")
 
-# 2. Prevent the import of the offending library from firing the warning again
-# by "faking" the module registration if it hasn't happened yet
-sys.modules['pkg_resources'] = type('pkg_resources', (object,), {
-    'declare_namespace': lambda name: None
-})
-
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 
 # Local imports
-from database import DatabaseManager
-from enrichment import EnrichmentService
-from retrieval import Retriever
-from schemas import MemoryType, AssociationType
-from pruning import MesaService
+from .database import DatabaseManager
+from .enrichment import EnrichmentService
+from .retrieval import Retriever
+from .schemas import MemoryType, AssociationType
+from .pruning import MesaService
 
 logger = logging.getLogger(__name__)
 

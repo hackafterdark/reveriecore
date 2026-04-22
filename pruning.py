@@ -4,17 +4,15 @@ from datetime import datetime, timedelta
 import threading
 import os
 import json
-from database import DatabaseManager
-from enrichment import EnrichmentService
-from schemas import MemoryType
+from .database import DatabaseManager
+from .enrichment import EnrichmentService
+from .schemas import MemoryType
 
 logger = logging.getLogger(__name__)
 
-logger = logging.getLogger(__name__)
-
-class MemoryPruningService:
+class MesaService:
     """
-    Background service for non-destructive memory consolidation.
+    Background service for non-destructive memory consolidation (MESA).
     
     1. Prunes expired ephemeral memories.
     2. Consolidates fragmented memories sharing canonical entities into high-level summaries.
