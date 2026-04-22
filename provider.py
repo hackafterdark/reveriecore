@@ -37,6 +37,7 @@ from .enrichment import EnrichmentService
 from .retrieval import Retriever
 from .schemas import MemoryType, AssociationType
 from .pruning import MesaService
+from .mirror import MirrorService
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,7 @@ class ReverieMemoryProvider(MemoryProvider):
         self._prefetch_thread = None
         self._sync_thread = None
         self._mesa_service = None
+        self._mirror_service = None
         self._is_shutdown = False
 
     @property
@@ -117,9 +119,15 @@ class ReverieMemoryProvider(MemoryProvider):
             i_cutoff = kwargs.get("mesa_importance_cutoff", 4.0)
             interval = kwargs.get("mesa_interval_seconds", 3600)
             
+            # Initialize MirrorService (Memory-as-Code)
+            archive_path = get_hermes_home() / "reverie_archive"
+            self._mirror_service = MirrorService(self._db, self._enrichment, archive_root=archive_path)
+            self._mirror_service.start()
+            
             self._mesa_service = MesaService(
                 self._db, 
                 self._enrichment,
+                mirror=self._mirror_service,
                 centrality_threshold=int(c_thresh),
                 age_days=int(a_days),
                 importance_cutoff=float(i_cutoff),
@@ -294,15 +302,15 @@ class ReverieMemoryProvider(MemoryProvider):
                             token_count_full, token_count_abstract,
                             memory_type, importance_score, 
                             author_id, owner_id, actor_id, 
-                            session_id, workspace
+                            session_id, workspace, guid
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         full_text, profile, 
                         tc_full, tc_abstract,
                         mem_type.value, importance, 
                         self.author_id, self.owner_id, self.actor_id, 
-                        self.session_id, self.workspace
+                        self.session_id, self.workspace, str(uuid.uuid4())
                     ))
                     
                     mem_id = cursor.lastrowid
@@ -519,6 +527,9 @@ class ReverieMemoryProvider(MemoryProvider):
         if self._mesa_service:
             self._mesa_service.stop()
             
+        if self._mirror_service:
+            self._mirror_service.stop()
+
         if self._db:
             self._db.close()
 
@@ -583,3 +594,21 @@ class ReverieMemoryProvider(MemoryProvider):
             pass
 
         logger.info(f"ReverieCore Logging initialized. Package: {pkg_name}, File: {log_file}")
+
+    def export_all_memories(self):
+        """Manual trigger to mirror all active memories to disk."""
+        if not self._db or not self._mirror_service:
+            return
+        logger.info("ReverieCore: Starting bulk export of all memories...")
+        cursor = self._db.get_cursor()
+        cursor.execute("SELECT id FROM memories WHERE status = 'ACTIVE'")
+        for (mid,) in cursor.fetchall():
+            self._mirror_service.export_node(mid)
+        logger.info("ReverieCore: Bulk export complete.")
+
+    def import_from_archive(self, path: Optional[str] = None):
+        """Manual trigger to ingest memories from a local archive."""
+        if not self._mirror_service:
+            return
+        p = Path(path) if path else None
+        self._mirror_service.import_archive(p)

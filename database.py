@@ -5,7 +5,8 @@ import json
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +60,14 @@ class DatabaseManager:
     def write_lock(self):
         """Context manager for atomicity and thread-safety during write operations."""
         with self._lock:
+            if not self.conn:
+                raise RuntimeError("Database connection is not initialized.")
             try:
                 yield self.conn.cursor()
                 self.conn.commit()
             except Exception as e:
-                self.conn.rollback()
+                if self.conn:
+                    self.conn.rollback()
                 logger.error(f"Database write operation failed (rolled back): {e}")
                 raise
 
@@ -91,7 +95,9 @@ class DatabaseManager:
                 learned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 last_accessed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 expires_at DATETIME,
-                status TEXT NOT NULL DEFAULT 'ACTIVE' -- 'ACTIVE' or 'ARCHIVED'
+                status TEXT NOT NULL DEFAULT 'ACTIVE', -- 'ACTIVE' or 'ARCHIVED'
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                guid TEXT UNIQUE
             )
         """)
         
@@ -103,7 +109,8 @@ class DatabaseManager:
                 label TEXT NOT NULL,            -- Type (e.g., "FILE", "FUNCTION")
                 description TEXT,
                 metadata TEXT,                   -- JSON
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                guid TEXT UNIQUE
             )
         """)
         
@@ -154,44 +161,45 @@ class DatabaseManager:
             columns.append("content_abstract")
 
         # 2. Additions
-        if "token_count_full" not in columns:
-            logger.info("Migrating database: Adding token_count_full column")
-            cursor.execute("ALTER TABLE memories ADD COLUMN token_count_full INTEGER")
-            
-        if "token_count_abstract" not in columns:
-            logger.info("Migrating database: Adding token_count_abstract column")
-            cursor.execute("ALTER TABLE memories ADD COLUMN token_count_abstract INTEGER")
-
-        if "author_id" not in columns:
-            logger.info("Migrating database: Adding author_id column")
-            cursor.execute("ALTER TABLE memories ADD COLUMN author_id TEXT NOT NULL DEFAULT 'USER'")
+        additions = [
+            ("token_count_full", "INTEGER"),
+            ("token_count_abstract", "INTEGER"),
+            ("author_id", "TEXT NOT NULL DEFAULT 'USER'"),
+            ("owner_id", "TEXT NOT NULL DEFAULT 'PERSONAL_WORKSPACE'"),
+            ("actor_id", "TEXT NOT NULL DEFAULT 'HERMES_AGENT'"),
+            ("session_id", "TEXT"),
+            ("workspace", "TEXT"),
+            ("status", "TEXT NOT NULL DEFAULT 'ACTIVE'"),
+            ("importance_score", "REAL DEFAULT 1.0"),
+            ("privacy", "TEXT NOT NULL DEFAULT 'PRIVATE'"),
+            ("metadata", "TEXT"),
+            ("learned_at", "DATETIME"),
+            ("expires_at", "DATETIME"),
+            ("updated_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
+            ("content_abstract", "TEXT")
+        ]
         
-        if "owner_id" not in columns:
-            logger.info("Migrating database: Adding owner_id column")
-            cursor.execute("ALTER TABLE memories ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'PERSONAL_WORKSPACE'")
-            
-        if "actor_id" not in columns:
-            logger.info("Migrating database: Adding actor_id column")
-            cursor.execute("ALTER TABLE memories ADD COLUMN actor_id TEXT NOT NULL DEFAULT 'HERMES_AGENT'")
-            
-        if "session_id" not in columns:
-            logger.info("Migrating database: Adding session_id column")
-            cursor.execute("ALTER TABLE memories ADD COLUMN session_id TEXT")
-            
-        if "workspace" not in columns:
-            logger.info("Migrating database: Adding workspace column")
-            cursor.execute("ALTER TABLE memories ADD COLUMN workspace TEXT")
-            
-        if "status" not in columns:
-            logger.info("Migrating database: Adding status column")
-            cursor.execute("ALTER TABLE memories ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE'")
+        for col_name, col_type in additions:
+            if col_name not in columns:
+                logger.info(f"Migrating database: Adding {col_name} column to memories")
+                try:
+                    # SQLite limitation: ALTER TABLE ADD COLUMN does not support dynamic (non-constant) defaults like CURRENT_TIMESTAMP.
+                    # Constant defaults (like 'ACTIVE' or 1.0) are supported and required for NOT NULL columns.
+                    if "CURRENT_TIMESTAMP" in col_type:
+                        base_type = col_type.split("DEFAULT")[0].strip()
+                        cursor.execute(f"ALTER TABLE memories ADD COLUMN {col_name} {base_type}")
+                        cursor.execute(f"UPDATE memories SET {col_name} = CURRENT_TIMESTAMP WHERE {col_name} IS NULL")
+                    else:
+                        cursor.execute(f"ALTER TABLE memories ADD COLUMN {col_name} {col_type}")
+                except sqlite3.OperationalError as e:
+                    logger.error(f"Migration failed for {col_name}: {e}")
 
         if "last_accessed_at" not in columns:
-            logger.info("Migrating database: Adding last_accessed_at column")
-            # SQLite does not allow adding a column with a dynamic default (like CURRENT_TIMESTAMP) 
-            # in some versions, so we add it and then populate it.
+            logger.info("Migrating database: Adding last_accessed_at column to memories")
             cursor.execute("ALTER TABLE memories ADD COLUMN last_accessed_at DATETIME")
             # For existing memories, seed last_accessed_at with learned_at if available, else current time
+            # We check if learned_at exists in 'columns' OR if we just added it.
+            # Since we just added it in the loop above if it was missing, it's safe to use now.
             cursor.execute("UPDATE memories SET last_accessed_at = COALESCE(learned_at, CURRENT_TIMESTAMP)")
         
         # 3. Enhanced Associations Migration
@@ -217,7 +225,26 @@ class DatabaseManager:
                     FOREIGN KEY (evidence_memory_id) REFERENCES memories(id) ON DELETE CASCADE
                 )
             """)
-        
+
+        # 4. GUID Migration
+        if "guid" not in columns:
+            logger.info("Migrating database: Adding guid column to memories")
+            cursor.execute("ALTER TABLE memories ADD COLUMN guid TEXT")
+            # Backfill existing memories
+            cursor.execute("SELECT id FROM memories WHERE guid IS NULL")
+            for (mid,) in cursor.fetchall():
+                cursor.execute("UPDATE memories SET guid = ? WHERE id = ?", (str(uuid.uuid4()), mid))
+            
+        cursor.execute("PRAGMA table_info(entities)")
+        ent_columns = [row[1] for row in cursor.fetchall()]
+        if "guid" not in ent_columns:
+            logger.info("Migrating database: Adding guid column to entities")
+            cursor.execute("ALTER TABLE entities ADD COLUMN guid TEXT")
+            # Backfill existing entities
+            cursor.execute("SELECT id FROM entities WHERE guid IS NULL")
+            for (eid,) in cursor.fetchall():
+                cursor.execute("UPDATE entities SET guid = ? WHERE id = ?", (str(uuid.uuid4()), eid))
+
         self.conn.commit()
 
     def purge_associations(self, memory_id: int):
@@ -275,15 +302,15 @@ class DatabaseManager:
                 """, (content_full, content_abstract, token_count_full, token_count_abstract, memory_id))
                 
             cursor.execute("""
-                UPDATE memories_vec SET embedding = ? WHERE rowid = ?
-            """, (sqlite_vec.serialize_float32(embedding), memory_id))
+                INSERT OR REPLACE INTO memories_vec (rowid, embedding) VALUES (?, ?)
+            """, (memory_id, sqlite_vec.serialize_float32(embedding)))
         logger.info(f"Memory {memory_id} updated successfully.")
 
     def get_memory(self, memory_id: int) -> Optional[dict]:
         """Fetches a single memory record by ID."""
         cursor = self.conn.cursor()
         cursor.execute("""
-            SELECT id, content_full, content_abstract, importance_score, owner_id, memory_type 
+            SELECT id, content_full, content_abstract, importance_score, owner_id, memory_type, guid, status, learned_at, metadata
             FROM memories WHERE id = ?
         """, (memory_id,))
         row = cursor.fetchone()
@@ -294,9 +321,110 @@ class DatabaseManager:
                 "content_abstract": row[2],
                 "importance_score": row[3],
                 "owner_id": row[4],
-                "memory_type": row[5]
+                "memory_type": row[5],
+                "guid": row[6],
+                "status": row[7],
+                "learned_at": row[8],
+                "metadata": row[9]
             }
         return None
+
+    def get_memory_by_guid(self, guid: str) -> Optional[dict]:
+        """Fetches a single memory record by GUID."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT id, content_full, content_abstract, importance_score, owner_id, memory_type, guid, status, learned_at, metadata
+            FROM memories WHERE guid = ?
+        """, (guid,))
+        row = cursor.fetchone()
+        if row:
+            return {
+                "id": row[0],
+                "content_full": row[1],
+                "content_abstract": row[2],
+                "importance_score": row[3],
+                "owner_id": row[4],
+                "memory_type": row[5],
+                "guid": row[6],
+                "status": row[7],
+                "learned_at": row[8],
+                "metadata": row[9]
+            }
+        return None
+
+    def get_entity(self, entity_id: int) -> Optional[dict]:
+        """Fetches a single entity record by ID."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT id, name, label, description, metadata, guid
+            FROM entities WHERE id = ?
+        """, (entity_id,))
+        row = cursor.fetchone()
+        if row:
+            return {
+                "id": row[0],
+                "name": row[1],
+                "label": row[2],
+                "description": row[3],
+                "metadata": row[4],
+                "guid": row[5]
+            }
+        return None
+
+    def get_entity_by_guid(self, guid: str) -> Optional[dict]:
+        """Fetches a single entity record by GUID."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT id, name, label, description, metadata, guid
+            FROM entities WHERE guid = ?
+        """, (guid,))
+        row = cursor.fetchone()
+        if row:
+            return {
+                "id": row[0],
+                "name": row[1],
+                "label": row[2],
+                "description": row[3],
+                "metadata": row[4],
+                "guid": row[5]
+            }
+        return None
+
+    def get_associations_for_node(self, node_id: int, node_type: str = 'MEMORY') -> List[Dict]:
+        """Fetches all associations where the node is either source or target."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT id, source_id, source_type, target_id, target_type, association_type, confidence_score, metadata
+            FROM memory_associations
+            WHERE (source_id = ? AND source_type = ?) OR (target_id = ? AND target_type = ?)
+        """, (node_id, node_type, node_id, node_type))
+        results = []
+        for row in cursor.fetchall():
+            results.append({
+                "id": row[0],
+                "source_id": row[1],
+                "source_type": row[2],
+                "target_id": row[3],
+                "target_type": row[4],
+                "association_type": row[5],
+                "confidence_score": row[6],
+                "metadata": row[7]
+            })
+        return results
+
+    def get_or_create_entity(self, name: str, label: str) -> int:
+        """Finds or creates an entity by canonical name with stable GUID."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id FROM entities WHERE name = ?", (name,))
+        row = cursor.fetchone()
+        if row:
+            return row[0]
+        
+        with self.write_lock() as cursor:
+            # We generate a GUID for new entities to maintain cross-platform identity
+            new_guid = str(uuid.uuid4())
+            cursor.execute("INSERT INTO entities (name, label, guid) VALUES (?, ?, ?)", (name, label, new_guid))
+            return cursor.lastrowid
 
     def get_cursor(self):
         return self.conn.cursor()

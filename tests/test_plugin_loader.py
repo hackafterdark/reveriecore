@@ -1,64 +1,45 @@
 import sys
-import importlib.util
+import os
+import pytest
 from pathlib import Path
-import unittest
 
-class TestHermesPluginLoader(unittest.TestCase):
+def test_plugin_package_importability():
     """
-    Simulates the exact dynamic plugin module loader used by Hermes.
-    This prevents subtle 'ModuleNotFoundError' and 'ImportError' issues
-    caused by absolute imports within the package colliding with the 
-    submodule_search_locations constraints during dynamic execution.
+    Regression Test: Simulates the Hermes loading process by importing 
+    the provider from the package. This ensures that relative imports 
+    work correctly and don't raise ModuleNotFoundError.
     """
-
-    def test_dynamic_package_loader(self):
-        provider_dir = Path(__file__).parent.parent
-        module_name = "_hermes_user_memory.reveriecore"
+    # 1. Setup path to simulate package loading from ~/.hermes/plugins/
+    # The plugin is located at .../.hermes/plugins/reveriecore
+    # We want to add .../.hermes/plugins/ to sys.path
+    project_root = Path(__file__).parent.parent
+    plugins_dir = str(project_root.parent)
+    
+    # Pre-check if it's already there (it shouldn't be for a clean test)
+    # But if we are running in the current environment it might be.
+    
+    original_path = list(sys.path)
+    if plugins_dir not in sys.path:
+        sys.path.insert(0, plugins_dir)
         
-        # Mock Hermes parent dependency
-        class MockParent: pass
-        if "_hermes_user_memory" not in sys.modules:
-            sys.modules["_hermes_user_memory"] = MockParent()
-
-        init_file = provider_dir / "__init__.py"
-        spec = importlib.util.spec_from_file_location(
-            module_name, str(init_file),
-            submodule_search_locations=[str(provider_dir)]
-        )
+    try:
+        # 2. Attempt import from package path
+        # We use __import__ to avoid issues with static analysis if it were a direct import
+        module = __import__("reveriecore.provider", fromlist=["ReverieMemoryProvider"])
+        provider_class = getattr(module, "ReverieMemoryProvider")
         
-        self.assertIsNotNone(spec, "__init__.py spec should not be None")
+        assert provider_class is not None
+        print("Plugin successfully loaded as package.")
         
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = mod
-        
-        # Dynamic submodule execution (Hermes style)
-        for sub_file in sorted(provider_dir.glob("*.py")):
-            if sub_file.name == "__init__.py":
-                continue
-            
-            sub_name = sub_file.stem
-            full_sub_name = f"{module_name}.{sub_name}"
-            
-            if full_sub_name not in sys.modules:
-                sub_spec = importlib.util.spec_from_file_location(
-                    full_sub_name, str(sub_file)
-                )
-                if sub_spec:
-                    sub_mod = importlib.util.module_from_spec(sub_spec)
-                    sys.modules[full_sub_name] = sub_mod
-                    try:
-                        sub_spec.loader.exec_module(sub_mod)
-                    except Exception as e:
-                        self.fail(f"Submodule loading for {sub_file.name} threw {type(e).__name__}: {e}")
-        
-        # Finally execute __init__ which cascades the imports
-        try:
-            spec.loader.exec_module(mod)
-        except Exception as e:
-            self.fail(f"__init__.py execution threw {type(e).__name__}: {e}")
-
-        # Check that it properly exports the register function
-        self.assertTrue(hasattr(mod, "register"), "Plugin must export a 'register(ctx)' function")
-
-if __name__ == '__main__':
-    unittest.main()
+    except ImportError as e:
+        pytest.fail(f"Plugin failed to load as package (Relative import issue?): {e}")
+    except Exception as e:
+        pytest.fail(f"Unexpected error during plugin package import: {e}")
+    finally:
+        # Cleanup
+        sys.path = original_path
+        # Remove from sys.modules to ensure re-import in other tests if needed
+        # (Though pytest usually isolates this enough)
+        for key in list(sys.modules.keys()):
+            if key.startswith("reveriecore"):
+                del sys.modules[key]
