@@ -283,7 +283,7 @@ class DatabaseManager:
         """Fetches a single memory record by ID."""
         cursor = self.conn.cursor()
         cursor.execute("""
-            SELECT id, content_full, content_abstract, importance_score, owner_id 
+            SELECT id, content_full, content_abstract, importance_score, owner_id, memory_type 
             FROM memories WHERE id = ?
         """, (memory_id,))
         row = cursor.fetchone()
@@ -293,12 +293,35 @@ class DatabaseManager:
                 "content_full": row[1],
                 "content_abstract": row[2],
                 "importance_score": row[3],
-                "owner_id": row[4]
+                "owner_id": row[4],
+                "memory_type": row[5]
             }
         return None
 
     def get_cursor(self):
         return self.conn.cursor()
+
+    def check_provenance_access(self, memory_id: int, owner_id: str) -> bool:
+        """
+        Verifies if a memory (usually a fragment) is accessible via a parent Observation.
+        Strict multi-tenant validation.
+        """
+        try:
+            cursor = self.conn.cursor()
+            # Check for CHILD_OF association to an observation owned by owner_id
+            query = """
+                SELECT COUNT(*) FROM memory_associations ma
+                JOIN memories m ON ma.target_id = m.id
+                WHERE ma.source_id = ? 
+                AND ma.association_type IN ('CHILD_OF', 'SUPERSEDES')
+                AND m.owner_id = ?
+            """
+            cursor.execute(query, (memory_id, owner_id))
+            count = cursor.fetchone()[0]
+            return count > 0
+        except Exception as e:
+            logger.error(f"Provenance check failed: {e}")
+            return False
 
     def commit(self):
         self.conn.commit()

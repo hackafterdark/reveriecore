@@ -14,65 +14,56 @@ The project aims to provide agents with a "long-term memory" that isn't just a l
 2.  **Intelligence-First Storage**: Automatically classify, score, and summarize memories upon ingestion.
 3.  **Namespace Isolation**: Ensure strict sandboxing of memories between different agent profiles.
 4.  **Desktop Friendly**: Zero-config, single-file persistence using SQLite.
-5.  **Multi-Model Analysis**: Utilize local LLM-based models (BART) for deep semantic understanding.
+5.  **Multi-Model Analysis**: Utilize local LLM-based models (mDeBERTa/BART) for deep semantic understanding.
+6.  **Data Sovereignty**: Provide a human-readable, portable mirror of agent cognitive state.
 
 ## 4. Key Features
 
 ### 4.1. Hybrid Graph-RAG Search
-Reverie Core combines vector similarity with deterministic graph traversal to provide deep context.
+Reverie Core combines vector similarity with deterministic graph traversal and hierarchical discovery.
 - **Base Search**: KNN search on 384-dimension embeddings (vector similarity).
 - **Graph Augmentation**: Bidirectional traversal of the association graph to bridge memories via shared entities.
-- **Precision Control**: Implements "Hub Protection" (per-node limits) to prevent context explosion.
-- **Re-ranking**: Final result order determined by a combination of vector similarity, BART importance, and graph proximity.
+- **Hierarchical Discovery (Tree of Nuance)**: Automatically detects **Observation Anchors** and provides signals for **Agentic Drill-Down** using the `recall_reverie` tool.
+- **Re-ranking**: Final result order determined by vector similarity, mDeBERTa importance, temporal decay, and graph proximity.
 
 ### 4.2. The Intelligence Layer (Enrichment)
 Automated processing of every memory saved:
-- **Zero-Shot Classification**: Categorizes memories into types (e.g., `TASK`, `USER_PREFERENCE`, `RUNTIME_ERROR`) using BART-Large-MNLI.
-- **Semantic Importance Scoring**: Uses semantic entailment to assign a weight (1.0 - 5.0) to memories based on their criticality.
-- **Summarization**: Generates a 1-2 sentence "semantic profile" (gist) for long memories using DistilBART.
+- **Zero-Shot Classification**: Categorizes memories into types (e.g., `OBSERVATION`, `TASK`, `USER_PREFERENCE`) using mDeBERTa-v3.
+- **Semantic Importance Scoring**: Assigns a weight (1.0 - 5.0) to memories based on their criticality.
+- **Summarization**: Generates a 1-2 sentence "semantic profile" (gist) for long memories.
 
-### 4.3. Knowledge Graph (Entities & Associations)
-Links memories and canonical concepts together:
-- **Canonical Entities**: Automatically extracts and deduplicates technical nouns (Files, Classes, Tools).
-- **Bidirectional Links**: Maps relationships like `PART_OF`, `DEPENDS_ON`, and `MENTIONS`.
-- **Relational Integrity**: Uses a polymorphic schema to support Memory-to-Entity and Entity-to-Entity connections.
+### 4.3. Active Cognitive Maintenance (MesaService)
+Ensures the "Active" database remains high-signal over time.
+- **Tier 1 (Archive)**: Identifies stale, low-importance fragmented memories and moves them to `ARCHIVED` status.
+- **Tier 1.5 (Consolidation)**: Crystallizes clusters of related stale memories into high-level **Observation Anchors**, preserving granularity via `CHILD_OF` links.
+- **Tier 2 (Purge)**: Physical cleanup of old archives and database `VACUUM`.
+- **Recency Protection**: Retrieval hits act as a "Stay Alive" signal, shielding active context from pruning.
 
-### 4.4. Identity & Provenance
+### 4.4. Memory-as-Code (Markdown Mirror) [NEW]
+A bi-directional synchronization system between SQLite and a filesystem-based Markdown archive.
+- **Markdown Export**: Serializes memory nodes into `.md` files with YAML frontmatter containing IDs, importance, and hierarchical associations.
+- **Bi-directional Sync**: Ability to "re-birth" a memory database from a folder of Markdown files.
+- **Human Readability**: Allows users to interact with agent memory using standard tools like Obsidian, VS Code, or `grep`.
+
+### 4.5. Identity, Provenance & Security
 A robust model to track memory origin and ownership:
-- `author_id`: The human user.
-- `owner_id`: The specific agent profile (Namespace).
-- `actor_id`: The service or agent that wrote the data.
-- `session_id` & `workspace`: Audit trails for environmental context.
+- **Multi-Tenant Isolation**: Strict `owner_id` (Namespace) enforcement.
+- **Provenance Validation**: Security checks ensuring agents can only recall fragments if they are descendants of an authorized Observation Anchor.
+- **Audit Trails**: Full tracking of `author_id`, `actor_id`, `session_id`, and `workspace`.
 
 ## 5. Technical Stack
-- **Languages**: Python 3.x (Plugin logic), SQL (Persistence), Go (Hermes Interface Bridge).
-- **Database**: SQLite 3 with `sqlite-vec` extension.
-- **LLM Connectivity**: Generic Provider Discovery (dynamically resolves active Hermes `base_url` and `model` from `config.yaml`).
-- **Models**:
-    - **Embeddings**: `all-MiniLM-L6-v2` (384 dimensions).
-    - **Classification/Scoring**: `facebook/bart-large-mnli`.
-    - **Summarization**: `sshleifer/distilbart-cnn-12-6`.
+- **Languages**: Python 3.x (Plugin logic), SQL (Persistence), Go (Hermes Bridge).
+- **Database**: SQLite 3 with `sqlite-vec` extension for local vector storage.
+- **Intelligence Layer**: Unified **`MoritzLaurer/mDeBERTa-v3-base-mnli-xnli`** for cross-lingual classification and importance scoring.
+- **Embeddings**: `all-MiniLM-L6-v2` (384 dimensions).
 
 ## 6. Data Schema
+- **`memories`**: Content, metadata, importance scores, and hierarchical signaling.
+- **`entities`**: Canonical identifiers for conceptually anchored world knowledge.
+- **`memory_associations`**: Polymorphic table mapping relationships (`CHILD_OF`, `SUPERSEDES`, `MENTIONS`).
+- **`memories_vec`**: Optimized virtual table for KNN vector search.
 
-### 6.1. `memories` Table
-Stores raw content, metadata, and calculated importance scores.
-
-### 6.2. `entities` Table
-Stores canonical identifiers for technical concepts (Files, Tools, Repos).
-
-### 6.3. `memory_associations` Table
-Polymorphic table mapping relationships between Memories and Entities.
-
-### 6.4. `memories_vec` Table
-Virtual table for optimized vector search indices.
-
-## 7. Performance Requirements
-- **Local Inference**: All enrichment and vectorization must run locally on CPU/GPU.
-- **Retrieval Speed**: Nearest neighbor search should complete in sub-100ms for thousands of records.
-- **Disk Footprint**: Minimal, leveraging the efficiency of SQLite.
-
-## 8. Success Metrics
-- **Relevance**: Increased precision in agent context retrieval compared to standard keyword search.
-- **Reliability**: Zero data leakage between profiles (`owner_id` isolation).
-- **Integrity**: 100% of memories are successfully categorized and vectorized.
+## 7. Success Metrics
+- **Context Density**: Up to 4x higher information density via Hierarchical Observation Anchors.
+- **Reasoning Accuracy**: Significant reduction in "Brain Rot" hallucinations via active Mesa pruning.
+- **Recovery**: 100% restoration of Memory State from Markdown Mirror in case of DB corruption.

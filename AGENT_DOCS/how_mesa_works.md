@@ -21,7 +21,7 @@ MesaService implements a "Sanitization" strategy that moves beyond simple time-b
 
 ## 2. Tiered Maintenance Strategy
 
-MesaService operates in two distinct tiers to balance database health with safety.
+MesaService operates in three distinct tiers to balance database health with safety.
 
 ### Tier 1: Soft-Prune (Daily)
 This tier identifies **Fragmented Memories** and shifts them to an `ARCHIVED` status. 
@@ -30,6 +30,12 @@ A memory is a candidate for archiving if it meets **all** of the following crite
 - **Stale**: `last_accessed_at` is older than 14 days.
 - **Low Centrality**: The memory has `< 2` associations in the Knowledge Graph.
 - **Status Independent**: It hasn't already been consolidated.
+
+### Tier 1.5: Hierarchical Consolidation (Daily)
+Instead of purely archiving, Mesa identifies clusters of stale/fragmented memories that share a common entity.
+- **Crystallization**: If **>= 5** memories share an entity and meet pruning criteria, they are "crystallized" into a high-level **Observation Anchor**.
+- **The Hierarchy**: Original memories are preserved as "Child Fragments" (`CHILD_OF`) linked to the anchor.
+- **Status Shift**: Fragments move to `ARCHIVED` to clear the primary search, ensuring the agent sees the "Wisdom" (summary) first, with the "Experience" (nuance) reachable via drill-down.
 
 ### Tier 2: Deep Clean (Monthly)
 This tier manages physical database health and permanent data removal.
@@ -52,21 +58,7 @@ This ensures that "reference books" you are currently using stay on the desk, wh
 ## 4. Technical Implementation
 
 ### Pruning Logic (SQL)
-Mesa identifies candidates using a comprehensive `LEFT JOIN` between the memory and associations tables:
-
-```sql
-SELECT m.id FROM memories m
-LEFT JOIN (
-    SELECT source_id as node_id FROM memory_associations WHERE source_type = 'MEMORY'
-    UNION ALL
-    SELECT target_id as node_id FROM memory_associations WHERE target_type = 'MEMORY'
-) a ON m.id = a.node_id
-WHERE m.importance_score < ?
-  AND m.last_accessed_at < datetime('now', ?)
-  AND m.status = 'ACTIVE'
-GROUP BY m.id
-HAVING COUNT(a.node_id) < ?
-```
+Mesa identifies candidates using a comprehensive `LEFT JOIN` between the memory and associations tables. For consolidation, it performs a clustered retrieval of nodes sharing entity edges.
 
 ### Concurrency Support
 MesaService runs in a background thread and uses **WAL (Write-Ahead Logging)** mode. This allows the maintenance service to perform intensive scanning and updates without blocking the agent's primary retrieval or storage operations.
@@ -82,6 +74,7 @@ Maintenance thresholds can be tuned in the Hermes `config.yaml` under the memory
 | `mesa_centrality_threshold` | `2` | Minimum graph edges required to remain ACTIVE. |
 | `mesa_retention_days` | `14` | Days since last access before a memory becomes "stale". |
 | `mesa_importance_cutoff` | `4.0` | Importance score threshold for "Anchored" status. |
+| `mesa_consolidation_threshold` | `5` | Min memories required to trigger hierarchical consolidation. |
 | `mesa_interval_seconds` | `3600` | Frequency of maintenance checks. |
 
 ---

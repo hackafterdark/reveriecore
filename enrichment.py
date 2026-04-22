@@ -11,7 +11,7 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoModelForSeque
 import torch
 import torch.nn.functional as F
 from sentence_transformers import SentenceTransformer
-from .schemas import MemoryType, AssociationType
+from schemas import MemoryType, AssociationType
 
 logger = logging.getLogger(__name__)
 
@@ -268,21 +268,25 @@ class EnrichmentService:
             logger.error(f"Semantic profiling failed: {e}")
             return text
 
-    def synthesize_memories(self, memories: List[str], entity_name: str) -> str:
-        """Uses LLM to synthesize multiple fragmented memories into one high-quality summary."""
+    def synthesize_memories(self, memories: Dict[int, str], entity_name: str) -> str:
+        """Uses LLM to synthesize multiple fragmented memories into one high-quality 'Observation Anchor'."""
         try:
             if not self.llm_client.check_connectivity():
-                return "\n".join(memories)[:2000] # Fallback: simple join
+                # Fallback: simple join
+                return "\n".join([f"Memory {mid}: {txt}" for mid, txt in memories.items()])[:3000]
 
             prompt = (
                 f"You are a memory consolidation service for a Knowledge Graph. "
-                f"Below are several fragmented memories related to the entity '{entity_name}'. "
-                "Synthesize them into one single, comprehensive, and high-quality memory record. "
-                "Include all technical details, dates, and relationships. "
-                "The result should be the NEW canonical fact for this entity."
+                f"Below are several fragmented experiences and memories related to the entity '{entity_name}'. "
+                "Your goal is to synthesize them into one single high-level OBSERVATION ANCHOR. "
+                "\n\nGUIDELINES:\n"
+                "1. Focus on PATTERNS and WISDOM. Do not just list the events; explain the underlying technical behavior or trend.\n"
+                "2. Be comprehensive but high-level. Keep the gritty details accessible by referencing the 'Source IDs'.\n"
+                "3. Use a tone of a generalist summarizing for a specialist.\n"
+                "4. Structure the output clearly with a summary followed by a 'Linked Nuance' section listing the IDs."
             )
             
-            context = "\n---\n".join(memories)
+            context = "\n---\n".join([f"ID {mid}: {txt}" for mid, txt in memories.items()])
             
             summary = self.llm_client.call([
                 {"role": "system", "content": prompt},

@@ -40,18 +40,18 @@ To prevent "Behavioral Anchoring" (where the agent is trapped by its history), t
 
 ### Phase 4: Active Cognitive Maintenance (Mesa)
 To ensure the "Active" database remains high-signal over months of operations:
-- **Pruning**: Background service filters for memories with `importance < 4.0` and `edges < 2`.
-- **Status Filter**: Retrieval is hard-scoped to `status = 'ACTIVE'`.
-- **Relational Re-weighting**: Retrieval search hits update `last_accessed_at`, creating a dynamic "Recency Guard" that prevents active project context from being archived.
+- **Hierarchical Consolidation**: Clusters of stale memories are crystallized into `OBSERVATION` anchors.
+- **Recall Reverie**: Implementation of the agentic drill-down tool for hierarchical nuance fetching.
+- **Security Provenance**: Multi-tenant validation ensuring unauthorized agents cannot recall fragments from another owner's hierarchy.
 
 ---
 
 ## 4. Future Roadmap: The "Solidification" Phase
 
-### A. Cluster Consolidation (The "Compression" Step)
-Automate the creation of high-level anchor points when the graph becomes too dense:
-- **Trigger**: Entity high-centrality threshold met.
-- **Action**: The LLM summarizes clusters of related memories into a single high-importance `OBSERVATION` summary, then archives the constituent "source" memories.
+### A. Automatic Conflict Resolution
+Automate the detection of contradictory memories in the graph:
+- **Trigger**: Contradiction score > 0.8 during enrichment.
+- **Action**: When two high-importance memories `CONTRADICTS` each other, trigger an LLM-led "Court of Wisdom" to create a resolution anchor that supersedes both.
 
 ### B. Influence Ranking (Feedback Loops)
 - **Concept**: If the agent successfully answers a query using a specific memory, that memory's `importance_score` should experience a small "Relational Boost." 

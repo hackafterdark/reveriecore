@@ -1,9 +1,10 @@
 import math
+import json
 from datetime import datetime
 import logging
 from typing import List, Dict, Any, Optional
-from .database import DatabaseManager
-from .graph_query import GraphQueryService
+from database import DatabaseManager
+from graph_query import GraphQueryService
 
 logger = logging.getLogger(__name__)
 
@@ -111,10 +112,10 @@ class Retriever:
             graph_anchored_ids = self.graph.get_memories_by_entities(anchors)
             if graph_anchored_ids:
                 id_placeholders = ",".join(["?"] * len(graph_anchored_ids))
-                query = f"SELECT id, content_full, content_abstract, token_count_full, token_count_abstract, importance_score, learned_at, expires_at FROM memories WHERE id IN ({id_placeholders}) AND status IN {status_filter}"
+                query = f"SELECT id, content_full, content_abstract, token_count_full, token_count_abstract, importance_score, learned_at, expires_at, memory_type, metadata FROM memories WHERE id IN ({id_placeholders}) AND status IN {status_filter}"
                 cursor.execute(query, tuple(graph_anchored_ids))
                 for row in cursor.fetchall():
-                    m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp = row
+                    m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp, m_type, meta = row
                     decay = self._calculate_decay(lat, imp, exp)
                     
                     # Graph anchors get a boost
@@ -123,7 +124,8 @@ class Retriever:
                     candidates.append({
                         "id": m_id, "content_full": c_f, "content_abstract": c_a,
                         "tc_full": tc_f or (len(c_f) // 4), "tc_abstract": tc_a or (len(c_a or "") // 4),
-                        "score": score, "importance": imp, "learned_at": lat, "source": "anchor"
+                        "score": score, "importance": imp, "learned_at": lat, "source": "anchor",
+                        "type": m_type, "metadata": meta
                     })
                     seen_ids.add(m_id)
 
@@ -142,14 +144,14 @@ class Retriever:
                     v_params.extend(allowed_owners)
                 
                 v_query = f"""
-                    SELECT m.id, m.content_full, m.content_abstract, m.token_count_full, m.token_count_abstract, m.importance_score, m.learned_at, m.expires_at, v.distance
+                    SELECT m.id, m.content_full, m.content_abstract, m.token_count_full, m.token_count_abstract, m.importance_score, m.learned_at, m.expires_at, v.distance, m.memory_type, m.metadata
                     FROM memories_vec v JOIN memories m ON v.rowid = m.id
                     WHERE v.embedding MATCH ? AND v.k = ? AND m.status IN {status_filter} {filter_clause}
                     ORDER BY v.distance ASC
                 """
                 cursor.execute(v_query, v_params)
                 for row in cursor.fetchall():
-                    m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp, dist = row
+                    m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp, dist, m_type, meta = row
                     if m_id in seen_ids: continue
                     
                     similarity = 1.0 / (1.0 + dist)
@@ -160,7 +162,8 @@ class Retriever:
                     candidates.append({
                         "id": m_id, "content_full": c_f, "content_abstract": c_a,
                         "tc_full": tc_f or (len(c_f) // 4), "tc_abstract": tc_a or (len(c_a or "") // 4),
-                        "score": final_score, "importance": imp, "learned_at": lat, "source": "vector"
+                        "score": final_score, "importance": imp, "learned_at": lat, "source": "vector",
+                        "type": m_type, "metadata": meta
                     })
                     seen_ids.add(m_id)
             except Exception as e:
@@ -196,10 +199,10 @@ class Retriever:
                 new_ids = [i for i in linked_results.keys() if i not in seen_ids]
                 if new_ids:
                     id_placeholders = ",".join(["?"] * len(new_ids))
-                    fetch_query = f"SELECT id, content_full, content_abstract, token_count_full, token_count_abstract, importance_score, learned_at, expires_at FROM memories WHERE id IN ({id_placeholders}) AND status IN {status_filter}"
+                    fetch_query = f"SELECT id, content_full, content_abstract, token_count_full, token_count_abstract, importance_score, learned_at, expires_at, memory_type, metadata FROM memories WHERE id IN ({id_placeholders}) AND status IN {status_filter}"
                     cursor.execute(fetch_query, tuple(new_ids))
                     for row in cursor.fetchall():
-                        m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp = row
+                        m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp, m_type, meta = row
                         decay = self._calculate_decay(lat, imp, exp)
                         
                         # Graph boost incorporates the discovery score from graph traversal
@@ -209,7 +212,8 @@ class Retriever:
                         candidates.append({
                             "id": m_id, "content_full": c_f, "content_abstract": c_a,
                             "tc_full": tc_f or (len(c_f) // 4), "tc_abstract": tc_a or (len(c_a or "") // 4),
-                            "score": score, "importance": imp, "learned_at": lat, "source": "graph"
+                            "score": score, "importance": imp, "learned_at": lat, "source": "graph",
+                            "type": m_type, "metadata": meta
                         })
                         seen_ids.add(m_id)
 
@@ -233,9 +237,20 @@ class Retriever:
             
             if chosen_content:
                 display_content = chosen_content
-                if c["source"] in ["graph", "anchor"]:
-                    summary = self.graph.get_neighbors_summary(c["id"])
-                    display_content += summary
+                if c["type"] == "OBSERVATION" or c["source"] in ["graph", "anchor"]:
+                    neighbors_summary = self.graph.get_neighbors_summary(c["id"])
+                    display_content += neighbors_summary
+                    
+                # Hierarchical Discovery: Append Child IDs if they exist
+                if c["type"] == "OBSERVATION" and c.get("metadata"):
+                    try:
+                        meta = json.loads(c["metadata"])
+                        child_ids = meta.get("source_ids", [])
+                        if child_ids:
+                            display_content += f"\n[Nuanced Details available via recall_reverie for IDs: {child_ids}]"
+                    except:
+                        pass
+
                 results.append({"id": c["id"], "content": display_content, "tokens": chosen_tokens, "version": version, "score": c["score"]})
                 current_tokens += chosen_tokens
         

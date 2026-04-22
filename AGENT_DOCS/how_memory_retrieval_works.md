@@ -42,8 +42,14 @@ Final ranking combines three signals:
 
 $$\text{Final Rank} = (W_1 \times \text{Similarity}) + (W_2 \times \text{Importance}) + \text{Graph Boost}$$
 
-#### 5. Recency Protection (The Maintenance Signal)
-Every time a memory is successfully retrieved, the system updates its `last_accessed_at` timestamp. This acts as a "Stay Alive" signal to the **MesaService**, shielding active context from background pruning even if the memory has low objective importance.
+#### 5. Agentic Drill-Down (Recall Reverie)
+While the system prioritizes high-level **Observation Anchors** in the initial search to save tokens, it never truly "forgets" the nuance.
+- **Discovery**: Search results for Observations automatically append a list of `[Nuanced Details available via recall_reverie for IDs: [102, 105, ...]]`.
+- **The Trigger**: The agent can explicitly use the `recall_reverie(memory_id)` tool to fetch specific "Gritty Details."
+- **Security Check**: Every drill-down call performs a strict provenance check to ensure the agent is authorized to view the fragment through its parent hierarchy.
+
+#### 6. Recency Protection (The Maintenance Signal)
+Every time a memory is successfully retrieved (or recalled via `recall_reverie`), the system updates its `last_accessed_at` timestamp. This acts as a "Stay Alive" signal to the **MesaService**, shielding active context from background pruning even if the memory has low objective importance.
 
 ### 📊 Context Hub: Adaptive Memory Budgeting
 

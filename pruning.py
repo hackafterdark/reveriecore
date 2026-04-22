@@ -3,9 +3,10 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 import threading
 import os
-from .database import DatabaseManager
-from .enrichment import EnrichmentService
-from .schemas import MemoryType
+import json
+from database import DatabaseManager
+from enrichment import EnrichmentService
+from schemas import MemoryType
 
 logger = logging.getLogger(__name__)
 
@@ -153,15 +154,18 @@ class MesaService:
     """
 
     def __init__(self, db: DatabaseManager, 
+                 enrichment: EnrichmentService,
                  centrality_threshold: int = 2, 
                  age_days: int = 14, 
                  importance_cutoff: float = 4.0,
                  interval_seconds: int = 3600):
         self.db = db
+        self.enrichment = enrichment
         self.centrality_threshold = centrality_threshold
         self.max_age_days = age_days
         self.importance_cutoff = importance_cutoff
         self.interval_seconds = interval_seconds
+        self.consolidation_threshold = 5 # Higher threshold for pattern recognition
         
         self.purge_enabled = os.environ.get("REVERIE_MESA_PURGE_ENABLED", "True").lower() == "true"
         self.dry_run = os.environ.get("REVERIE_MESA_DRY_RUN", "False").lower() == "true"
@@ -189,10 +193,13 @@ class MesaService:
         """Main background loop."""
         while not self._stop_event.wait(self.interval_seconds):
             try:
-                # 1. Soft Prune
+                # 1. Soft Prune (Tier 1: Fragmentation Cleanup)
                 self.run_soft_prune()
                 
-                # 2. Deep Clean (Once a month/30 days)
+                # 1.5. Hierarchical Consolidation (Tier 1.5: The Tree of Nuance)
+                self.run_hierarchical_consolidation()
+                
+                # 2. Deep Clean (Tier 2: Purge & Vacuum - Once a month)
                 if self.purge_enabled and self._should_deep_clean():
                     self.run_deep_clean()
             except Exception as e:
@@ -251,6 +258,113 @@ class MesaService:
             
         except Exception as e:
             logger.error(f"MesaService Soft Prune failed: {e}")
+
+    def run_hierarchical_consolidation(self):
+        """Identifies clusters of stale/fragmented memories and crystallizes them into Observation Anchors."""
+        logger.info("MesaService: Running Tier 1.5 (Hierarchical Consolidation)...")
+        try:
+            cursor = self.db.get_cursor()
+            
+            # Find entities mentioned in clusters of stale/fragmented ACTIVE memories
+            # Criteria: 
+            # - status = 'ACTIVE'
+            # - shared entity
+            # - count >= threshold
+            # - memories are candidates for pruning (stale OR low centrality)
+            
+            age_filter = f"-{self.max_age_days} days"
+            
+            query = f"""
+                SELECT e.id, e.name, COUNT(ma.source_id) as c_count, GROUP_CONCAT(ma.source_id) as member_ids
+                FROM memory_associations ma
+                JOIN entities e ON ma.target_id = e.id
+                JOIN memories m ON ma.source_id = m.id
+                WHERE ma.source_type = 'MEMORY' 
+                AND ma.target_type = 'ENTITY'
+                AND m.status = 'ACTIVE'
+                AND (m.last_accessed_at < datetime('now', ?) OR m.importance_score < ?)
+                GROUP BY e.id
+                HAVING c_count >= ?
+            """
+            cursor.execute(query, (age_filter, self.importance_cutoff, self.consolidation_threshold))
+            clusters = cursor.fetchall()
+
+            for ent_id, ent_name, count, member_ids_str in clusters:
+                logger.debug(f"Cluster: Entity {ent_name}, Count {count}")
+                member_ids = [int(i) for i in member_ids_str.split(',')]
+                self._consolidate_to_hierarchy(member_ids, ent_name, ent_id)
+
+        except Exception as e:
+            logger.error(f"Hierarchical consolidation failed: {e}")
+
+    def _consolidate_to_hierarchy(self, member_ids: List[int], entity_name: str, entity_id: int):
+        """Creates a high-level Observation Anchor and archives children with CHILD_OF links."""
+        logger.info(f"MesaService: Consolidating '{entity_name}' hierarchy ({len(member_ids)} fragments)...")
+        
+        try:
+            # 0. Fetch content
+            id_to_text = {}
+            with self.db.write_lock() as cursor:
+                placeholders = ",".join(["?"] * len(member_ids))
+                cursor.execute(f"SELECT id, content_full FROM memories WHERE id IN ({placeholders})", tuple(member_ids))
+                for mid, txt in cursor.fetchall():
+                    id_to_text[mid] = txt
+                
+            if not id_to_text:
+                return
+
+            # 1. Hierarchical Synthesis
+            summary_text = self.enrichment.synthesize_memories(id_to_text, entity_name)
+            
+            # 2. Extract Profile & Importance
+            profile = self.enrichment.generate_semantic_profile(summary_text)
+            imp_data = self.enrichment.calculate_importance(summary_text)
+            
+            with self.db.write_lock() as cursor:
+                # 3. Save Observation Anchor
+                metadata = json.dumps({"source_ids": member_ids, "consensus_target": entity_name})
+                cursor.execute("""
+                    INSERT INTO memories (
+                        content_full, content_abstract, importance_score, memory_type, status, metadata
+                    ) VALUES (?, ?, ?, ?, 'ACTIVE', ?)
+                """, (summary_text, profile, 4.5, "OBSERVATION", metadata)) # Force high importance for anchors
+                
+                anchor_id = cursor.lastrowid
+                
+                # Vector
+                vec = self.enrichment.generate_embedding(profile)
+                import sqlite_vec
+                cursor.execute("INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)", 
+                            (anchor_id, sqlite_vec.serialize_float32(vec)))
+
+                # 4. Link Hierarchy and Archive
+                for mid in member_ids:
+                    # CHILD_OF link
+                    cursor.execute("""
+                        INSERT INTO memory_associations (source_id, source_type, target_id, target_type, association_type)
+                        VALUES (?, 'MEMORY', ?, 'MEMORY', 'CHILD_OF')
+                    """, (mid, anchor_id))
+                    
+                    # Also keep SUPERSEDES for backward compatibility
+                    cursor.execute("""
+                        INSERT INTO memory_associations (source_id, source_type, target_id, target_type, association_type)
+                        VALUES (?, 'MEMORY', ?, 'MEMORY', 'SUPERSEDES')
+                    """, (anchor_id, mid))
+                    
+                    # Archive source
+                    cursor.execute("UPDATE memories SET status = 'ARCHIVED' WHERE id = ?", (mid,))
+
+                # 5. Link anchor to entity
+                cursor.execute("""
+                    INSERT INTO memory_associations (source_id, source_type, target_id, target_type, association_type)
+                    VALUES (?, 'MEMORY', ?, 'ENTITY', 'MENTIONS')
+                """, (anchor_id, entity_id))
+
+            logger.info(f"MesaService: Hierarchical crystallization complete. Anchor: {anchor_id}")
+
+        except Exception as e:
+            logger.error(f"Hierarchical crystallization for {entity_name} failed: {e}")
+            self.db.conn.rollback()
 
     def run_deep_clean(self):
         """Tier 2: Purges old archives and VACUUMs the database."""

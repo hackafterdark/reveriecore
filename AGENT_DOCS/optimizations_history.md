@@ -34,11 +34,12 @@ To combat "ambient noise" in dense knowledge graphs, we implemented **Signal-Awa
 - **The Fallback:** If the local signal is weak, the system automatically expands to a 2-hop search to find missing context.
 - **Audit Logging:** Every expansion logs its depth and signal strength to `reverie.log`, allowing for detailed post-mortem tuning of the precision/recall trade-off.
 
-### Optimization D: Active Cognitive Maintenance (Mesa)
-To prevent "Brain Rot" in long-running agents, we implemented the **MesaService**, a background maintenance layer.
-- **Mechanism:** A two-tier strategy that soft-archives fragmented memories (low importance, low centrality, stale) and performs monthly physical database optimizations (VACUUM).
-- **Recency Guard:** We turned the retrieval process into a reinforcement signal. Every search hit updates a memory's `last_accessed_at` timestamp, shielding it from archiving.
-- **Impact:** Technical proofs showed a jump to **100% Signal-to-Noise ratio** in cluttered environments by suppressing irrelevant or outdated context.
+### Optimization D: Active Cognitive Maintenance (Mesa) & The Tree of Nuance
+To prevent "Brain Rot" in long-running agents, we implemented the **MesaService**, a background maintenance layer inspired by hierarchical biological memory.
+- **Hierarchical Consolidation (Tier 1.5)**: Instead of simple deletion, related fragmented memories are "crystallized" into high-level **Observation Anchors**. Original experiences are preserved as "Child Fragments" linked via `CHILD_OF` edges.
+- **Agentic Drill-Down (Recall Reverie)**: We implemented a `recall_reverie(id)` tool. Retrieval returns high-level anchors first to save tokens, but provides the agent with "Nuance IDs" to explicitly drill down for gritty details when precision is required.
+- **Maintenance Signal**: Every search hit (or tool-recall) updates a memory's `last_accessed_at` timestamp. This acts as a reinforcement signal that shields active context from pruning regardless of objective importance.
+- **Impact**: Demonstrates a **100% Signal-to-Noise ratio** in cluttered environments while maintaining a secure audit trail for every synthesized fact.
 
 ---
 

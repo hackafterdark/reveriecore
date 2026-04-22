@@ -38,11 +38,11 @@ from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 
 # Local imports
-from .database import DatabaseManager
-from .enrichment import EnrichmentService
-from .retrieval import Retriever
-from .schemas import MemoryType
-from .pruning import MesaService
+from database import DatabaseManager
+from enrichment import EnrichmentService
+from retrieval import Retriever
+from schemas import MemoryType, AssociationType
+from pruning import MesaService
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +125,7 @@ class ReverieMemoryProvider(MemoryProvider):
             
             self._mesa_service = MesaService(
                 self._db, 
+                self._enrichment,
                 centrality_threshold=int(c_thresh),
                 age_days=int(a_days),
                 importance_cutoff=float(i_cutoff),
@@ -368,10 +369,27 @@ class ReverieMemoryProvider(MemoryProvider):
                     },
                     "required": ["action"]
                 }
+            },
+            {
+                "name": "recall_reverie",
+                "description": "Drill down into the specific, nuanced experiences (fragments) that form an Observation Anchor. Use this when a retrieved summary indicates that Child IDs are available and you need gritty details to maintain precision.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "memory_id": {
+                            "type": "integer",
+                            "description": "The Child ID to recall (as listed in the parent Observation's context)."
+                        }
+                    },
+                    "required": ["memory_id"]
+                }
             }
         ]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
+        if tool_name == "recall_reverie":
+            return self._handle_recall_reverie(args.get("memory_id"))
+
         if tool_name != "memory":
             return tool_error(f"Unknown tool: {tool_name}")
 
@@ -427,6 +445,38 @@ class ReverieMemoryProvider(MemoryProvider):
                 return f"Memory ID {mem_id} has been successfully replaced with the new content."
 
         return tool_error(f"Unsupported memory action: {action}")
+
+    def _handle_recall_reverie(self, mem_id: Optional[int]) -> str:
+        """Handles the 'drill-down' request with strict multi-tenant validation."""
+        if not mem_id:
+            return tool_error("memory_id is required for recall_reverie.")
+            
+        try:
+            # 1. Fetch metadata and ownership
+            memory = self._db.get_memory(mem_id)
+            if not memory:
+                return tool_error(f"Memory fragment {mem_id} not found.")
+                
+            # 2. Strict Security Validation
+            # Case A: Explicit Ownership
+            if memory.get("owner_id") == self.owner_id or memory.get("owner_id") == "PERSONAL_WORKSPACE":
+                is_authorized = True
+            else:
+                # Case B: Provenance check (Is it a child of an authorized Observation?)
+                is_authorized = self._db.check_provenance_access(mem_id, self.owner_id)
+                
+            if not is_authorized:
+                logger.warning(f"SECURITY ALERT: Actor {self.actor_id} (Prop: {self.owner_id}) attempted to unauthorized recall of memory {mem_id}")
+                return tool_error("Access Denied. You are not authorized to recall this memory fragment.")
+
+            # 3. Return the full content
+            content = memory.get("content_full", "")
+            m_type = memory.get("memory_type", "FRAGMENT")
+            return f"### RECALLED NUANCE (ID: {mem_id}, Type: {m_type})\n\n{content}"
+
+        except Exception as e:
+            logger.error(f"recall_reverie failed for {mem_id}: {e}")
+            return tool_error(f"Internal error during recall: {str(e)}")
 
     def _handle_management_search(self, query: str, action_type: str) -> str:
         """Helper to find top 3 semantic matches for confirmation workflow."""
