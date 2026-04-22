@@ -25,7 +25,7 @@ def test_search():
         }
     }
     
-    p.initialize(**kwargs)
+    p.initialize("test-session", **kwargs)
     print("Provider Initialized. Starting search for 'poem'...")
     
     try:

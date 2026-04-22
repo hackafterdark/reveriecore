@@ -28,17 +28,22 @@ def test_resurfacing():
     cursor.execute("INSERT INTO memories (content_full, status, importance_score) VALUES (?, 'ARCHIVED', 3.0)", 
                    ("Specific detail about a hidden secret.",))
     archived_id = cursor.lastrowid
-    db.commit()
     
-    print(f"Created archived memory {archived_id}")
+    # Also need a vector entry for search to find it via vector fallback
+    import sqlite_vec
+    vec = [0.0] * 384
+    cursor.execute("INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)", 
+                 (archived_id, sqlite_vec.serialize_float32(vec)))
+    db.commit()
+    print(f"Created archived memory {archived_id} with vector")
 
     # 2. Test Standard Search (Should NOT find it)
-    results = retriever.search("hidden secret", [0]*384, include_archived=False)
+    results = retriever.search([0]*384, "hidden secret", include_archived=False)
     print(f"Standard Search Results: {len(results)}")
     assert len(results) == 0
 
     # 3. Test Deep Search (Should find it)
-    results_deep = retriever.search("hidden secret", [0]*384, include_archived=True)
+    results_deep = retriever.search([0]*384, "hidden secret", include_archived=True)
     print(f"Deep Search Results: {len(results_deep)}")
     assert len(results_deep) == 1
     assert results_deep[0]['id'] == archived_id

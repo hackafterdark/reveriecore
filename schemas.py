@@ -28,5 +28,6 @@ class AssociationType(Enum):
     IS_A = "IS_A"
     MENTIONS = "MENTIONS"
     DEFINES = "DEFINES"
+    DEFINED_IN = "DEFINED_IN"
     CHILD_OF = "CHILD_OF"
     SUPERSEDES = "SUPERSEDES"

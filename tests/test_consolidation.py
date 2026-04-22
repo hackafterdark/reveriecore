@@ -39,7 +39,9 @@ def test_consolidation():
     
     mem_ids = []
     for m in memories:
-        cursor.execute("INSERT INTO memories (content_full, status, learned_at) VALUES (?, 'ACTIVE', '2023-01-01T00:00:00Z')", (m,))
+        from datetime import datetime, timedelta
+        stale_date = (datetime.now() - timedelta(days=30)).isoformat()
+        cursor.execute("INSERT INTO memories (content_full, status, learned_at, last_accessed_at, importance_score) VALUES (?, 'ACTIVE', ?, ?, 1.0)", (m, stale_date, stale_date))
         mid = cursor.lastrowid
         mem_ids.append(mid)
         # Vector entry (Vector-First requirement)

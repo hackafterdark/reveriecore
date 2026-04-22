@@ -68,20 +68,31 @@ class GraphQueryService:
                 """
                 neighbors_query = f"SELECT next_id, next_type, confidence_score, type_weight, (confidence_score * (1 + (is_anchor * ?))) as discovery_score, rowid FROM ({neighbors_query}) ORDER BY type_weight DESC, discovery_score DESC, rowid ASC LIMIT ?"
                 
-                params = [
-                    node_id, node_type, node_id, node_type,
-                    node_id, node_type,
-                    node_id, node_type, node_id, node_type,
-                ]
+                # Parameter ordering: 1 (gravity), then inner query params, then 1 (limit)
+                params = [gravity] 
+                # Inner SELECT params (10 + len(anchor_list))
+                params.extend([
+                    node_id, node_type, node_id, node_type, # next_id, next_type
+                    node_id, node_type,                     # type_weight
+                    node_id, node_type,                     # is_anchor part 1
+                ])
                 params.extend(anchor_list)
+                params.extend([node_id, node_type])         # is_anchor part 2
+                
+                # WHERE clause params (4)
                 params.extend([node_id, node_type, node_id, node_type])
-                params.extend([gravity, per_node_limit])
+                
+                # Final LIMIT param (1)
+                params.append(per_node_limit)
 
                 cursor.execute(neighbors_query, tuple(params))
+
+                rows = cursor.fetchall()
                 
-                for next_id, next_type, _, _, d_score, _ in cursor.fetchall():
+                for next_id, next_type, _, _, d_score, _ in rows:
                     # If not visited OR we found a higher-score path
                     if (next_id, next_type) not in visited or d_score > visited[(next_id, next_type)]:
+
                         visited[(next_id, next_type)] = d_score
                         next_layer.append((next_id, next_type))
                         if next_type == 'MEMORY':

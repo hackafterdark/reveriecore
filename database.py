@@ -12,29 +12,16 @@ logger = logging.getLogger(__name__)
 
 class DatabaseManager:
     """
-    Thread-safe Singleton for managing SQLite and vector virtual tables.
-    Ensures global locking for write operations across all plugin components.
+    Manages SQLite and vector virtual tables.
+    Each instance represents a single database connection.
     """
-    _instance = None
-    _lock = threading.Lock()
-
-    def __new__(cls, *args, **kwargs):
-        if not cls._instance:
-            with cls._lock:
-                if not cls._instance:
-                    cls._instance = super(DatabaseManager, cls).__new__(cls)
-        return cls._instance
-    
     def __init__(self, db_path: str = "reveries.db"):
-        # Initialize only once
-        if hasattr(self, 'initialized'):
-            return
-            
         self.db_path = db_path
         self.conn = None
-        self.initialized = False
+        self._lock = threading.Lock()
         self._initialize_db()
-        self.initialized = True
+
+
 
     def _initialize_db(self):
         """Connects, loads extensions, and ensures schema exists."""
@@ -212,7 +199,7 @@ class DatabaseManager:
             logger.info("Migrating database: Recreating memory_associations with polymorphic support")
             cursor.execute("DROP TABLE IF EXISTS memory_associations")
             cursor.execute("""
-                CREATE TABLE memory_associations (
+                CREATE TABLE IF NOT EXISTS memory_associations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     source_id INTEGER NOT NULL,
                     source_type TEXT NOT NULL DEFAULT 'MEMORY',
@@ -412,7 +399,7 @@ class DatabaseManager:
             })
         return results
 
-    def get_or_create_entity(self, name: str, label: str) -> int:
+    def get_or_create_entity(self, name: str, label: str, description: str = None) -> int:
         """Finds or creates an entity by canonical name with stable GUID."""
         cursor = self.conn.cursor()
         cursor.execute("SELECT id FROM entities WHERE name = ?", (name,))
@@ -423,7 +410,7 @@ class DatabaseManager:
         with self.write_lock() as cursor:
             # We generate a GUID for new entities to maintain cross-platform identity
             new_guid = str(uuid.uuid4())
-            cursor.execute("INSERT INTO entities (name, label, guid) VALUES (?, ?, ?)", (name, label, new_guid))
+            cursor.execute("INSERT INTO entities (name, label, guid, description) VALUES (?, ?, ?, ?)", (name, label, new_guid, description))
             return cursor.lastrowid
 
     def get_cursor(self):

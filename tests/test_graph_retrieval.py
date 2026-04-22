@@ -7,10 +7,7 @@ from pathlib import Path
 # Add project root to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-# Mock sqlite_vec since it's not in the base environment
-import sys
-from unittest.mock import MagicMock
-sys.modules['sqlite_vec'] = MagicMock()
+# Note: Removed global sys.modules['sqlite_vec'] mock which caused state pollution.
 
 from reveriecore.database import DatabaseManager
 from reveriecore.graph_query import GraphQueryService
@@ -43,8 +40,11 @@ def test_shared_entity_bridging():
     cursor.execute("INSERT INTO memory_associations (source_id, source_type, target_id, target_type, association_type) VALUES (102, 'MEMORY', 500, 'ENTITY', 'MENTIONS')")
     
     db.commit()
+    cursor.execute("SELECT * FROM memory_associations")
+    print(f"Associations in DB: {cursor.fetchall()}")
     
     # 4. Test Traversal from 101 to find 102
+
     results = graph.get_related_memories([101], depth=2)
     print(f"Bridge results from 101: {results}")
     assert 102 in results
@@ -72,16 +72,16 @@ def test_hub_protection():
     for i in range(2, 22):
         cursor.execute(f"INSERT INTO memories (id, content_full) VALUES ({i}, 'Leaf {i}')")
         # Bidirectional link: Leaf -> Hub
-        cursor.execute(f"INSERT INTO memory_associations (source_id, source_type, target_id, target_type, association_type, confidence) VALUES ({i}, 'MEMORY', 100, 'ENTITY', 'MENTIONS', {i/100.0})")
+        cursor.execute(f"INSERT INTO memory_associations (source_id, source_type, target_id, target_type, association_type, confidence_score) VALUES ({i}, 'MEMORY', 100, 'ENTITY', 'MENTIONS', {i/100.0})")
         
     db.commit()
     
-    # 5. Run traversal with limit 10
+    # 5. Run traversal with limit 11
     # Depth 2: Memory 1 -> Entity 100 (Hub) -> Memories 2..21 (Leaves)
     # The Hub (100) has 21 total associations (1 incoming from seed, 20 incoming from leaves).
-    # Our limit is 10 per node. 
-    # Since Hub is Entity 100, we should get 10 leaf memories back.
-    results = graph.get_related_memories([1], depth=2, per_node_limit=10)
+    # Since Hub is Entity 100, we should get 10 leaf memories back (+ the seed itself which we skip).
+    # So we request 11 neighbors from the Hub.
+    results = graph.get_related_memories([1], depth=2, per_node_limit=11)
     print(f"Hub protection results count: {len(results)}")
     
     # The set of 10 should be the ones with highest confidence (21, 20, 19...)

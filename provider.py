@@ -232,115 +232,120 @@ class ReverieMemoryProvider(MemoryProvider):
         self._prefetch_thread = threading.Thread(target=_run, daemon=True, name="reverie-prefetch")
         self._prefetch_thread.start()
 
+    def _save_memory_sync(self, user_content: str, assistant_content: str, session_id: str = "") -> None:
+        """Internal synchronous method to process and save memory."""
+        try:
+            # For turn saving, we focus on the assistant's response or a composite
+            full_text = f"User: {user_content}\nAssistant: {assistant_content}"
+            
+            # 1. Intelligence Layer Analysis
+            mem_type = self._enrichment.classify_type(full_text)
+            importance_data = self._enrichment.calculate_importance(full_text)
+            importance = importance_data["score"]
+            profile = self._enrichment.generate_semantic_profile(full_text)
+            vec = self._enrichment.generate_embedding(profile) # Embed the profile for cleaner signal
+            
+            # 2. Canonical Merge Check
+            # Search for duplicates with > 0.95 similarity
+            duplicates = self._retriever.find_duplicates(
+                vec, 
+                threshold=0.95, 
+                allowed_owners=[self.owner_id, "PERSONAL_WORKSPACE"]
+            )
+            
+            if duplicates:
+                dup = duplicates[0]
+                dup_id = dup["id"]
+                logger.info(f"Canonical Merge: Match found (ID: {dup_id}, Similarity: {dup['similarity']:.3f}). Synthesizing...")
+                
+                # Merge content using LLM synthesis
+                merged_text = self._enrichment.synthesize_memories(
+                    {dup_id: dup["content_full"], -1: full_text}, 
+                    "canonical_knowledge"
+                )
+                
+                # Re-analyze synthesized content
+                new_profile = self._enrichment.generate_semantic_profile(merged_text)
+                new_vec = self._enrichment.generate_embedding(new_profile)
+                new_importance = self._enrichment.calculate_importance(merged_text)["score"]
+                
+                # New Token Counts
+                tc_full = self._enrichment.count_tokens(merged_text)
+                tc_abstract = self._enrichment.count_tokens(new_profile)
+                
+                self._db.update_memory(
+                    dup_id, 
+                    merged_text, 
+                    new_profile, 
+                    new_vec, 
+                    tc_full, 
+                    tc_abstract,
+                    importance_score=new_importance
+                )
+                logger.info(f"Memory {dup_id} Canonicalized and Updated.")
+                return 
+
+            # 3. Standard Relational Store (if no merge found)
+            tc_full = self._enrichment.count_tokens(full_text)
+            tc_abstract = self._enrichment.count_tokens(profile)
+            
+            with self._db.write_lock() as cursor:
+                import uuid
+                cursor.execute("""
+                    INSERT INTO memories (
+                        content_full, content_abstract, 
+                        token_count_full, token_count_abstract,
+                        memory_type, importance_score, 
+                        author_id, owner_id, actor_id, 
+                        session_id, workspace, guid
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    full_text, profile, 
+                    tc_full, tc_abstract,
+                    mem_type.value, importance, 
+                    self.author_id, self.owner_id, self.actor_id, 
+                    session_id or self.session_id, self.workspace, str(uuid.uuid4())
+                ))
+                
+                mem_id = cursor.lastrowid
+                
+                # 4. Vector Store
+                import sqlite_vec
+                cursor.execute("""
+                    INSERT INTO memories_vec (rowid, embedding)
+                    VALUES (?, ?)
+                """, (mem_id, sqlite_vec.serialize_float32(vec)))
+                
+            # 5. Graph Extraction (Triggered if high importance)
+            if importance >= 3.0:
+                logger.info(f"Triggering enhanced graph extraction for memory {mem_id}")
+                self._enrichment.extract_graph_data(full_text, mem_id, self._db)
+
+            logger.debug(f"Memory saved: ID {mem_id}, Type {mem_type.value}, Score {importance}")
+            
+        except Exception as e:
+            logger.warning(f"ReverieCore sync failed: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Asynchronously cleans, scores, embeds, and saves the conversation turn."""
         if not self._enrichment or not self._db:
             return
 
-        def _sync():
-            try:
-                # For turn saving, we focus on the assistant's response or a composite
-                full_text = f"User: {user_content}\nAssistant: {assistant_content}"
-                
-                # 1. Intelligence Layer Analysis
-                mem_type = self._enrichment.classify_type(full_text)
-                importance_data = self._enrichment.calculate_importance(full_text)
-                importance = importance_data["score"]
-                profile = self._enrichment.generate_semantic_profile(full_text)
-                vec = self._enrichment.generate_embedding(profile) # Embed the profile for cleaner signal
-                
-                # 2. Canonical Merge Check
-                # Search for duplicates with > 0.95 similarity
-                duplicates = self._retriever.find_duplicates(
-                    vec, 
-                    threshold=0.95, 
-                    allowed_owners=[self.owner_id, "PERSONAL_WORKSPACE"]
-                )
-                
-                if duplicates:
-                    dup = duplicates[0]
-                    dup_id = dup["id"]
-                    logger.info(f"Canonical Merge: Match found (ID: {dup_id}, Similarity: {dup['similarity']:.3f}). Synthesizing...")
-                    
-                    # Merge content using LLM synthesis
-                    merged_text = self._enrichment.synthesize_memories(
-                        [dup["content_full"], full_text], 
-                        "canonical_knowledge"
-                    )
-                    
-                    # Re-analyze synthesized content
-                    new_profile = self._enrichment.generate_semantic_profile(merged_text)
-                    new_vec = self._enrichment.generate_embedding(new_profile)
-                    new_importance = self._enrichment.calculate_importance(merged_text)["score"]
-                    
-                    # New Token Counts
-                    tc_full = self._enrichment.count_tokens(merged_text)
-                    tc_abstract = self._enrichment.count_tokens(new_profile)
-                    
-                    self._db.update_memory(
-                        dup_id, 
-                        merged_text, 
-                        new_profile, 
-                        new_vec, 
-                        tc_full, 
-                        tc_abstract,
-                        importance_score=new_importance
-                    )
-                    logger.info(f"Memory {dup_id} Canonicalized and Updated.")
-                    return # Exit background thread, merge complete
-
-                # 3. Standard Relational Store (if no merge found)
-                # Token Counts
-                tc_full = self._enrichment.count_tokens(full_text)
-                tc_abstract = self._enrichment.count_tokens(profile)
-                
-                # Fixed: Using write_lock transaction for safety
-                with self._db.write_lock() as cursor:
-                    cursor.execute("""
-                        INSERT INTO memories (
-                            content_full, content_abstract, 
-                            token_count_full, token_count_abstract,
-                            memory_type, importance_score, 
-                            author_id, owner_id, actor_id, 
-                            session_id, workspace, guid
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        full_text, profile, 
-                        tc_full, tc_abstract,
-                        mem_type.value, importance, 
-                        self.author_id, self.owner_id, self.actor_id, 
-                        self.session_id, self.workspace, str(uuid.uuid4())
-                    ))
-                    
-                    mem_id = cursor.lastrowid
-                    
-                    # 4. Vector Store
-                    import sqlite_vec
-                    cursor.execute("""
-                        INSERT INTO memories_vec (rowid, embedding)
-                        VALUES (?, ?)
-                    """, (mem_id, sqlite_vec.serialize_float32(vec)))
-                    
-                # 5. Graph Extraction (Triggered if high importance)
-                if importance >= 3.0:
-                    logger.info(f"Triggering enhanced graph extraction for memory {mem_id}")
-                    # This is still inside the _sync thread, which is backgrounded
-                    self._enrichment.extract_graph_data(full_text, mem_id, self._db)
-
-                # debug
-                actual_path = Path(self._db.db_path).resolve()
-                logger.debug(f"Memory saved: ID {mem_id}, Type {mem_type.value}, Score {importance}")
-                
-            except Exception as e:
-                logger.warning(f"ReverieCore sync failed: {e}")
-
         # Non-blocking sync
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=3.0)
 
-        self._sync_thread = threading.Thread(target=_sync, daemon=True, name="reverie-sync")
+        self._sync_thread = threading.Thread(
+            target=self._save_memory_sync, 
+            args=(user_content, assistant_content, session_id),
+            daemon=True, 
+            name="reverie-sync"
+        )
         self._sync_thread.start()
+
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         """Provides the memory management tool schema to Hermes."""
