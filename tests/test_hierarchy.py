@@ -35,14 +35,14 @@ def setup_mocks():
 
 setup_mocks()
 
-import schemas, database, enrichment, retrieval, pruning, provider
+import reveriecore.schemas, reveriecore.database, reveriecore.enrichment, reveriecore.retrieval, reveriecore.pruning, reveriecore.provider
 
-from database import DatabaseManager
-from enrichment import EnrichmentService
-from pruning import MesaService
-from retrieval import Retriever
-from provider import ReverieMemoryProvider
-from schemas import MemoryType, AssociationType
+from reveriecore.database import DatabaseManager
+from reveriecore.enrichment import EnrichmentService
+from reveriecore.pruning import MesaService
+from reveriecore.retrieval import Retriever
+from reveriecore.provider import ReverieMemoryProvider
+from reveriecore.schemas import MemoryType, AssociationType
 
 # Setup logging to console for tests
 logging.basicConfig(level=logging.INFO)

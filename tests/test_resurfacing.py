@@ -7,11 +7,11 @@ import sys
 # Ensure local imports work
 sys.path.append(os.getcwd())
 
-from database import DatabaseManager
-from enrichment import EnrichmentService
-from pruning import MemoryPruningService
-from retrieval import Retriever
-from schemas import MemoryType
+from reveriecore.database import DatabaseManager
+from reveriecore.enrichment import EnrichmentService
+from reveriecore.pruning import MesaService
+from reveriecore.retrieval import Retriever
+from reveriecore.schemas import MemoryType
 
 def test_resurfacing():
     # Setup isolated DB

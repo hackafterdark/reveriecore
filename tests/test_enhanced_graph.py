@@ -8,10 +8,10 @@ from pathlib import Path
 # Add project root to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from database import DatabaseManager
-from enrichment import EnrichmentService, ConfigLoader
-from retrieval import Retriever
-from schemas import AssociationType, MemoryType
+from reveriecore.database import DatabaseManager
+from reveriecore.enrichment import EnrichmentService, ConfigLoader
+from reveriecore.retrieval import Retriever
+from reveriecore.schemas import AssociationType, MemoryType
 
 def test_full_graph_pipeline():
     # 1. Setup Mock DB

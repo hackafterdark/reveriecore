@@ -9,7 +9,7 @@ sys.path.append(os.getcwd())
 
 from reveriecore.database import DatabaseManager
 from reveriecore.enrichment import EnrichmentService
-from reveriecore.pruning import MemoryPruningService
+from reveriecore.pruning import MesaService
 from reveriecore.retrieval import Retriever
 from reveriecore.schemas import MemoryType
 
@@ -20,7 +20,7 @@ def test_consolidation():
     
     db = DatabaseManager(db_path)
     enrichment = EnrichmentService({})
-    pruning = MemoryPruningService(db, enrichment)
+    pruning = MesaService(db, enrichment)
     retriever = Retriever(db, enrichment)
     
     cursor = db.get_cursor()
@@ -42,6 +42,9 @@ def test_consolidation():
         cursor.execute("INSERT INTO memories (content_full, status, learned_at) VALUES (?, 'ACTIVE', '2023-01-01T00:00:00Z')", (m,))
         mid = cursor.lastrowid
         mem_ids.append(mid)
+        # Vector entry (Vector-First requirement)
+        import sqlite_vec
+        cursor.execute("INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)", (mid, sqlite_vec.serialize_float32([0.1]*384)))
         # Link to entity
         cursor.execute("INSERT INTO memory_associations (source_id, source_type, target_id, target_type, association_type) VALUES (?, 'MEMORY', ?, 'ENTITY', 'MENTIONS')", (mid, ent_id))
 
@@ -49,7 +52,8 @@ def test_consolidation():
     print(f"Created {len(mem_ids)} memories for {entity_name}")
 
     # 2. Run Consolidation (threshold 4)
-    pruning.consolidate_by_entities(threshold=4)
+    pruning.consolidation_threshold = 4
+    pruning.run_hierarchical_consolidation()
     
     # 3. Verify
     cursor.execute("SELECT id, content_full, status FROM memories WHERE status = 'ACTIVE'")
@@ -73,7 +77,7 @@ def test_consolidation():
     
     # 5. Check Retrieval
     # Create a query vector (dummy)
-    results = retriever.search("database info", [0]*384)
+    results = retriever.search([0]*384, "database info")
     print(f"Search results count: {len(results)}")
     assert len(results) == 1
     

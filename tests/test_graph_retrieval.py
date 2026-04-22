@@ -12,9 +12,9 @@ import sys
 from unittest.mock import MagicMock
 sys.modules['sqlite_vec'] = MagicMock()
 
-from database import DatabaseManager
-from graph_query import GraphQueryService
-from retrieval import Retriever
+from reveriecore.database import DatabaseManager
+from reveriecore.graph_query import GraphQueryService
+from reveriecore.retrieval import Retriever
 
 def setup_mock_db(db_path):
     if os.path.exists(db_path):
