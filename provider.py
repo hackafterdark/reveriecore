@@ -282,6 +282,13 @@ class ReverieMemoryProvider(MemoryProvider):
                     tc_abstract,
                     importance_score=new_importance
                 )
+
+
+
+
+
+
+
                 logger.info(f"Memory {dup_id} Canonicalized and Updated.")
                 return 
 

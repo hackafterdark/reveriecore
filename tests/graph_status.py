@@ -5,7 +5,6 @@ from pathlib import Path
 import logging
 
 # Add project root to sys.path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 def check_graph_status():
     # Avoid hermes_constants dependency to allow local python3 runs

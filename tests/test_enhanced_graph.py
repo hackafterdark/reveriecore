@@ -6,23 +6,20 @@ from unittest.mock import MagicMock, patch
 from pathlib import Path
 
 # Add project root to sys.path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from reveriecore.database import DatabaseManager
 from reveriecore.enrichment import EnrichmentService
 from reveriecore.schemas import AssociationType
 
-def test_full_graph_pipeline():
+def test_full_graph_pipeline(tmp_path):
     # 1. Setup Mock DB
-    db_path = "test_reverie_v2.db"
-    if os.path.exists(db_path):
-        os.remove(db_path)
+    db_path = str(tmp_path / "test_reverie_v2.db")
     
     db = DatabaseManager(db_path)
     cursor = db.get_cursor()
     
     # 2. Setup Enrichment with Mock LLM
-    with patch("reveriecore.enrichment.InternalLLMClient.check_connectivity", return_value=True), \
+    with patch("reveriecore.enrichment.InternalLLMClient.is_connected", return_value=True), \
          patch("reveriecore.enrichment.InternalLLMClient.call") as mock_call:
         
         enrichment = EnrichmentService()
@@ -49,22 +46,17 @@ def test_full_graph_pipeline():
         # 4. Verify
         cursor.execute("SELECT name, label FROM entities")
         entities = cursor.fetchall()
-        print(f"Entities: {entities}")
         assert len(entities) == 2
         
         cursor.execute("SELECT source_id, target_id, association_type FROM memory_associations WHERE association_type = 'MENTIONS'")
         mentions = cursor.fetchall()
-        print(f"Mentions: {mentions}")
         assert len(mentions) == 2
         
         cursor.execute("SELECT source_id, target_id, association_type FROM memory_associations WHERE association_type = 'DEFINED_IN'")
         triples = cursor.fetchall()
-        print(f"Triples: {triples}")
         assert len(triples) == 1
         
-    print("SUCCESS: Graph pipeline verified.")
-    if os.path.exists(db_path):
-        os.remove(db_path)
+    db.close()
 
 if __name__ == "__main__":
     test_full_graph_pipeline()

@@ -5,7 +5,6 @@ from datetime import datetime
 import sys
 
 # Ensure local imports work
-sys.path.append(os.getcwd())
 
 from reveriecore.database import DatabaseManager
 from reveriecore.enrichment import EnrichmentService

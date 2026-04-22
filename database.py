@@ -244,6 +244,12 @@ class DatabaseManager:
     def delete_memory(self, memory_id: int):
         """Atomically removes a memory and its vector index."""
         with self.write_lock() as cursor:
+            # Check what's actually in there
+            print(f"DEBUG SQL: db_path: {self.db_path}")
+            cursor.execute("SELECT id FROM memories")
+            existing_ids = [r[0] for r in cursor.fetchall()]
+            print(f"DEBUG SQL: Existing IDs in table: {existing_ids}")
+
             # memory_associations has FOREIGN KEY (evidence_memory_id) REFERENCES memories(id) ON DELETE CASCADE
             # So associations will be cleaned up automatically.
             cursor.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
@@ -287,10 +293,18 @@ class DatabaseManager:
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                 """, (content_full, content_abstract, token_count_full, token_count_abstract, memory_id))
-                
-            cursor.execute("""
-                INSERT OR REPLACE INTO memories_vec (rowid, embedding) VALUES (?, ?)
-            """, (memory_id, sqlite_vec.serialize_float32(embedding)))
+            
+            # Check if the memory actually existed
+            if cursor.rowcount == 0:
+                raise ValueError(f"Memory with ID {memory_id} not found.")
+
+            # sqlite-vec virtual tables do not support INSERT OR REPLACE.
+            # Must DELETE first, then INSERT for existing rows.
+            cursor.execute("DELETE FROM memories_vec WHERE rowid = ?", (memory_id,))
+            cursor.execute(
+                "INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)",
+                (memory_id, sqlite_vec.serialize_float32(embedding))
+            )
         logger.info(f"Memory {memory_id} updated successfully.")
 
     def get_memory(self, memory_id: int) -> Optional[dict]:

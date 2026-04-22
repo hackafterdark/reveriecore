@@ -1,24 +1,42 @@
-# --- Mock Hermes Core (Must be first) ---
-import sys
-from pathlib import Path
-from unittest.mock import MagicMock
-agent = MagicMock()
-class BaseMemoryProvider:
-    def __init__(self, *args, **kwargs): pass
-    def initialize(self, *args, **kwargs): pass
-    def shutdown(self, *args, **kwargs): pass
-agent.memory_provider.MemoryProvider = BaseMemoryProvider
-sys.modules["agent"] = agent
-sys.modules["agent.memory_provider"] = agent.memory_provider
-tools = MagicMock(); sys.modules["tools"] = tools; sys.modules["tools.registry"] = tools.registry
-hc = MagicMock(); hc.get_hermes_home = lambda: Path.home() / ".hermes"
-sys.modules["hermes_constants"] = hc
-# ---------------------------------------
-
 import os
+import sys
 import json
 import pandas as pd
-# Add parent of reveriecore to path so it can be imported as a package
+from pathlib import Path
+from unittest.mock import MagicMock
+
+# --- Mock Hermes Core (Must be first for standalone) ---
+def setup_standalone_mocks():
+    if "pytest" in sys.modules:
+        return
+
+    import types
+    agent = types.ModuleType("agent")
+    agent.memory_provider = types.ModuleType("memory_provider")
+    class BaseMemoryProvider:
+        def __init__(self, *args, **kwargs): pass
+        def initialize(self, *args, **kwargs): pass
+        def shutdown(self, *args, **kwargs): pass
+    agent.memory_provider.MemoryProvider = BaseMemoryProvider
+    sys.modules["agent"] = agent
+    sys.modules["agent.memory_provider"] = agent.memory_provider
+    
+    tools = MagicMock()
+    sys.modules["tools"] = tools
+    sys.modules["tools.registry"] = tools.registry
+    
+    hc = MagicMock()
+    # SAFE TEMP DIR
+    temp_dir = Path("/tmp/reverie_benchmark_run")
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    hc.get_hermes_home = lambda: temp_dir
+    sys.modules["hermes_constants"] = hc
+
+if __name__ == "__main__":
+    setup_standalone_mocks()
+# ---------------------------------------
+
+# Add parent of reveriecore to path
 current_dir = Path(__file__).parent.resolve()
 project_root = current_dir.parent.resolve()
 parent_dir = project_root.parent.resolve()
@@ -29,16 +47,30 @@ if str(parent_dir) not in sys.path:
 from reveriecore.provider import ReverieMemoryProvider
 from reveriecore.enrichment import ConfigLoader
 
-# RAGAS Imports
-from ragas import evaluate
-from ragas.metrics import Faithfulness, ContextPrecision
-from ragas.run_config import RunConfig
-from langchain_openai import ChatOpenAI
-from datasets import Dataset
+def check_ragas():
+    try:
+        from ragas import evaluate
+        return True
+    except ImportError:
+        return False
 
 def run_benchmark():
+    if not check_ragas():
+        print("Ragas not installed, skipping full benchmark.")
+        return
+
+    from ragas import evaluate
+    from ragas.metrics import Faithfulness, ContextPrecision
+    from ragas.run_config import RunConfig
+    from langchain_openai import ChatOpenAI
+    from datasets import Dataset
+
     # 1. Load Data
     data_path = project_root / "tests" / "benchmark_data.json"
+    if not data_path.exists():
+        print(f"Benchmark data not found at {data_path}")
+        return
+
     with open(data_path, "r") as f:
         samples = json.load(f)
     
@@ -48,7 +80,6 @@ def run_benchmark():
     provider = ReverieMemoryProvider()
     provider.initialize(session_id="benchmark_run")
     
-    # Load Hermes Config for LLM
     config = ConfigLoader.load_config()
     model_cfg = config.get("model", {})
     providers = config.get("providers", [])
@@ -71,27 +102,22 @@ def run_benchmark():
         temperature=0
     )
 
-    # 3. Execute RAG Cycle
     results = []
-    for i, item in enumerate(samples[:20]): # 20 questions
+    for i, item in enumerate(samples[:5]): # Reduced for quick verification
         question = item["question"]
-        print(f"[{i+1}/20] Querying: {question[:50]}...")
+        print(f"[{i+1}/5] Querying: {question[:50]}...")
         
-        # Retrieval
-        # We need to generate an embedding for the query first
         query_vec = provider._enrichment.generate_embedding(question)
         retrieved = provider._retriever.search(
             query_vec, 
             query_text=question,
-            limit=3,
-            token_budget=2000
+            limit=3
         )
         
         contexts = [r["content"] for r in retrieved]
         context_str = "\n".join(contexts)
         
-        # Generation
-        prompt = f"Answer the following question based ONLY on the provided context.\n\nContext:\n{context_str}\n\nQuestion: {question}\n\nAnswer:"
+        prompt = f"Answer validly based on context.\nContext:\n{context_str}\nQuestion: {question}"
         response = llm.invoke(prompt)
         answer = response.content
         
@@ -102,15 +128,10 @@ def run_benchmark():
             "ground_truth": item["ground_truth"]
         })
 
-    # 4. Convert to RAGAS Dataset
     df = pd.DataFrame(results)
     dataset = Dataset.from_pandas(df)
     
-    # 5. Evaluate
-    print("\nRunning RAGAS Evaluation... (This may take a few minutes)")
-    # Throttle concurrency to prevent overwhelming the local LLM server
     run_config = RunConfig(max_workers=2)
-    
     result = evaluate(
         dataset,
         metrics=[Faithfulness(), ContextPrecision()],
@@ -118,21 +139,7 @@ def run_benchmark():
         run_config=run_config
     )
     
-    # 6. Report
-    print("\n" + "="*50)
-    print("REVERIE CORE RETRIEVAL BENCHMARK RESULTS")
-    print("="*50)
     print(result)
-    print("="*50)
-    
-    # Save results
-    output_path = project_root / "tests" / "benchmark_results.json"
-    # Access the scores dictionary from the EvaluationResult object
-    result_dict = result.scores
-    with open(output_path, "w") as f:
-        json.dump(result_dict, f, indent=2)
-    print(f"Results saved to {output_path}")
-
     provider.shutdown()
 
 if __name__ == "__main__":

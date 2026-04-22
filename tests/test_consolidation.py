@@ -5,7 +5,6 @@ from datetime import datetime
 import sys
 
 # Ensure local imports work
-sys.path.append(os.getcwd())
 
 from reveriecore.database import DatabaseManager
 from reveriecore.enrichment import EnrichmentService
@@ -13,10 +12,9 @@ from reveriecore.pruning import MesaService
 from reveriecore.retrieval import Retriever
 from reveriecore.schemas import MemoryType
 
-def test_consolidation():
+def test_consolidation(tmp_path):
     # Setup isolated DB
-    db_path = "test_consolidation.db"
-    if os.path.exists(db_path): os.remove(db_path)
+    db_path = str(tmp_path / "test_consolidation.db")
     
     db = DatabaseManager(db_path)
     enrichment = EnrichmentService({})

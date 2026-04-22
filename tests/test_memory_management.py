@@ -12,6 +12,13 @@ def provider(tmp_path, monkeypatch):
     p._warm_cache = MagicMock()
     p.initialize("test_session", user_id="test_user")
     
+    # Ensure fresh DB for each function-scoped test
+    cursor = p._db.get_cursor()
+    cursor.execute("DELETE FROM memories")
+    cursor.execute("DELETE FROM entities")
+    cursor.execute("DELETE FROM memory_associations")
+    p._db.commit()
+    
     # Mock heavy enrichment bits
     p._enrichment.generate_embedding = MagicMock(return_value=[0.1]*384)
     p._enrichment.synthesize_memories = MagicMock(return_value="Merged Memory: keep it safe")
@@ -57,15 +64,19 @@ def test_canonical_merge_deduplication(provider):
     row = cursor.fetchone()
     assert row is not None
     mem_id = row[0]
-
+    provider._db.commit() # Finish the first read transaction to avoid stale views
+    
     # Mock retriever to find the first memory as a duplicate
+
     provider._retriever.find_duplicates = MagicMock(return_value=[{"id": mem_id, "content_full": text1, "similarity": 0.99}])
     
     text2 = "The server login is admin / password123. Please keep it safe."
     provider._save_memory_sync("Login info reminder", text2, session_id="test_session")
     
     # Verify merge happened (no new row)
-    cursor.execute("SELECT content_full FROM memories WHERE id = ?", (mem_id,))
-    row = cursor.fetchone()
-    assert row is not None
-    assert "keep it safe" in row[0]
+    # Use get_memory to ensure we're using the provider's standard data access path
+    updated_mem = provider._db.get_memory(mem_id)
+    
+    assert updated_mem is not None
+    assert updated_mem["id"] == mem_id
+    assert "keep it safe" in updated_mem["content_full"]

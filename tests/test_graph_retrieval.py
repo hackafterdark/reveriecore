@@ -5,7 +5,6 @@ from unittest.mock import MagicMock, patch
 from pathlib import Path
 
 # Add project root to sys.path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Note: Removed global sys.modules['sqlite_vec'] mock which caused state pollution.
 
