@@ -19,7 +19,7 @@ The raw query is passed to `sentence-transformers`. This converts the agent's in
 Using the `sqlite-vec` extension, we perform a nearest-neighbor search on the `memories_vec` virtual table while enforcing **Namespace Isolation**.
 - **The SQL:** 
   ```sql
-  SELECT m.id, v.distance 
+  SELECT m.id, m.guid, v.distance 
   FROM memories_vec v JOIN memories m ON v.rowid = m.id
   WHERE v.embedding MATCH $V_q$ 
     AND (m.owner_id = $profile OR m.privacy = 'PUBLIC')
@@ -37,18 +37,33 @@ Similarity isn't everything. A memory that is semantically similar to your query
 #### 4. Intelligence-Based Re-ranking (The Filter)
 Final ranking combines three signals:
 1. **Vector Similarity**: How well the text matches the query.
-2. **BART Importance**: A zero-shot score (1.0 to 5.0) for the fact's objective value.
+2. **BART Importance**: A zero-shot score (0.0 to 10.0) for the fact's objective value.
 3. **Graph Proximity**: A boost for memories discovered via graph links.
 
-$$\text{Final Rank} = (W_1 \times \text{Similarity}) + (W_2 \times \text{Importance}) + \text{Graph Boost}$$
+$$\text{Final Rank} = (W_1 \times \text{Similarity}) + (W_2 \times \frac{\text{Importance}}{10.0}) + \text{Graph Boost}$$
 
-#### 5. Agentic Drill-Down (Recall Reverie)
+#### 5. Structured Context Injection
+Every retrieved memory is injected into the agent's context window using a standardized, frontmatter-style Markdown header. This gives the model explicit metadata for temporal and semantic grounding.
+- **Categorical Labeling**: Numerical importance is mapped to labels: `Incidental` (0-3), `Relevant` (4-7), or `Critical` (8-10).
+- **Environmental Metadata**: Fields like `Location` are dynamically pulled from the memory's JSON `metadata` field.
+- **Example Format**:
+  ```markdown
+  ### MEMORY ID: <guid>
+  - Timestamp: 2024-04-23
+  - Category: USER_PREFERENCE
+  - Importance: Relevant
+  - Location: San Francisco
+  - Context: 
+    The user prefers dark mode for all IDE components.
+  ```
+
+#### 6. Agentic Drill-Down (Recall Reverie)
 While the system prioritizes high-level **Observation Anchors** in the initial search to save tokens, it never truly "forgets" the nuance.
 - **Discovery**: Search results for Observations automatically append a list of `[Nuanced Details available via recall_reverie for IDs: [102, 105, ...]]`.
 - **The Trigger**: The agent can explicitly use the `recall_reverie(memory_id)` tool to fetch specific "Gritty Details."
 - **Security Check**: Every drill-down call performs a strict provenance check to ensure the agent is authorized to view the fragment through its parent hierarchy.
 
-#### 6. Recency Protection (The Maintenance Signal)
+#### 7. Recency Protection (The Maintenance Signal)
 Every time a memory is successfully retrieved (or recalled via `recall_reverie`), the system updates its `last_accessed_at` timestamp. This acts as a "Stay Alive" signal to the **MesaService**, shielding active context from background pruning even if the memory has low objective importance.
 
 ### 📊 Context Hub: Adaptive Memory Budgeting
