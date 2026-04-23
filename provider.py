@@ -156,6 +156,14 @@ class ReverieMemoryProvider(MemoryProvider):
             self.total_context = model_meta.get("context_length") or self.total_context
             self.model_name = model_meta.get("model") or self.model_name
             
+        # Capture environmental metadata (Location, Environment, etc.)
+        self._last_turn_metadata = {}
+        for key in ["location", "geolocation", "environment", "weather"]:
+            if key in kwargs:
+                self._last_turn_metadata[key] = kwargs[key]
+            elif key in model_meta:
+                self._last_turn_metadata[key] = model_meta[key]
+
         logger.debug(f"ReverieCore Turn {turn_number}: Remaining Budget: {self.remaining_tokens}/{self.total_context}")
 
     def _calculate_budget(self) -> int:
@@ -232,7 +240,7 @@ class ReverieMemoryProvider(MemoryProvider):
         self._prefetch_thread = threading.Thread(target=_run, daemon=True, name="reverie-prefetch")
         self._prefetch_thread.start()
 
-    def _save_memory_sync(self, user_content: str, assistant_content: str, session_id: str = "") -> None:
+    def _save_memory_sync(self, user_content: str, assistant_content: str, session_id: str = "", metadata: dict = None) -> None:
         """Internal synchronous method to process and save memory."""
         try:
             # For turn saving, we focus on the assistant's response or a composite
@@ -280,7 +288,8 @@ class ReverieMemoryProvider(MemoryProvider):
                     new_vec, 
                     tc_full, 
                     tc_abstract,
-                    importance_score=new_importance
+                    importance_score=new_importance,
+                    metadata=metadata
                 )
 
 
@@ -304,15 +313,16 @@ class ReverieMemoryProvider(MemoryProvider):
                         token_count_full, token_count_abstract,
                         memory_type, importance_score, 
                         author_id, owner_id, actor_id, 
-                        session_id, workspace, guid
+                        session_id, workspace, guid, metadata
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     full_text, profile, 
                     tc_full, tc_abstract,
                     mem_type.value, importance, 
                     self.author_id, self.owner_id, self.actor_id, 
-                    session_id or self.session_id, self.workspace, str(uuid.uuid4())
+                    session_id or self.session_id, self.workspace, str(uuid.uuid4()),
+                    json.dumps(metadata) if metadata else None
                 ))
                 
                 mem_id = cursor.lastrowid
@@ -336,10 +346,13 @@ class ReverieMemoryProvider(MemoryProvider):
             import traceback
             logger.debug(traceback.format_exc())
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "", metadata: dict = None) -> None:
         """Asynchronously cleans, scores, embeds, and saves the conversation turn."""
         if not self._enrichment or not self._db:
             return
+
+        # Use captured metadata if none provided explicitly
+        final_metadata = metadata or getattr(self, "_last_turn_metadata", None)
 
         # Non-blocking sync
         if self._sync_thread and self._sync_thread.is_alive():
@@ -347,7 +360,7 @@ class ReverieMemoryProvider(MemoryProvider):
 
         self._sync_thread = threading.Thread(
             target=self._save_memory_sync, 
-            args=(user_content, assistant_content, session_id),
+            args=(user_content, assistant_content, session_id, final_metadata),
             daemon=True, 
             name="reverie-sync"
         )

@@ -273,26 +273,29 @@ class DatabaseManager:
 
     def update_memory(self, memory_id: int, content_full: str, content_abstract: str, 
                       embedding: list[float], token_count_full: int, token_count_abstract: int,
-                      importance_score: float = None):
+                      importance_score: float = None, metadata: dict = None):
         """Updates an existing memory and its vector representation."""
         import sqlite_vec
         with self.write_lock() as cursor:
+            # Prepare update fields
+            updates = {
+                "content_full": content_full,
+                "content_abstract": content_abstract,
+                "token_count_full": token_count_full,
+                "token_count_abstract": token_count_abstract
+            }
             if importance_score is not None:
-                cursor.execute("""
-                    UPDATE memories SET 
-                        content_full = ?, content_abstract = ?, 
-                        token_count_full = ?, token_count_abstract = ?,
-                        importance_score = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                """, (content_full, content_abstract, token_count_full, token_count_abstract, importance_score, memory_id))
-            else:
-                cursor.execute("""
-                    UPDATE memories SET 
-                        content_full = ?, content_abstract = ?, 
-                        token_count_full = ?, token_count_abstract = ?,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                """, (content_full, content_abstract, token_count_full, token_count_abstract, memory_id))
+                updates["importance_score"] = importance_score
+            if metadata is not None:
+                updates["metadata"] = json.dumps(metadata)
+                
+            set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
+            set_clause += ", updated_at = CURRENT_TIMESTAMP"
+                
+            params = [updates[k] for k in updates.keys()]
+            params.append(memory_id)
+            
+            cursor.execute(f"UPDATE memories SET {set_clause} WHERE id = ?", tuple(params))
             
             # Check if the memory actually existed
             if cursor.rowcount == 0:
@@ -316,6 +319,13 @@ class DatabaseManager:
         """, (memory_id,))
         row = cursor.fetchone()
         if row:
+            meta = row[9]
+            if meta and isinstance(meta, str):
+                try:
+                    meta = json.loads(meta)
+                except:
+                    pass
+                    
             return {
                 "id": row[0],
                 "content_full": row[1],
@@ -326,7 +336,7 @@ class DatabaseManager:
                 "guid": row[6],
                 "status": row[7],
                 "learned_at": row[8],
-                "metadata": row[9]
+                "metadata": meta
             }
         return None
 
@@ -339,6 +349,13 @@ class DatabaseManager:
         """, (guid,))
         row = cursor.fetchone()
         if row:
+            meta = row[9]
+            if meta and isinstance(meta, str):
+                try:
+                    meta = json.loads(meta)
+                except:
+                    pass
+                    
             return {
                 "id": row[0],
                 "content_full": row[1],
@@ -349,7 +366,7 @@ class DatabaseManager:
                 "guid": row[6],
                 "status": row[7],
                 "learned_at": row[8],
-                "metadata": row[9]
+                "metadata": meta
             }
         return None
 

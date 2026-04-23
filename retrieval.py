@@ -20,10 +20,10 @@ class Retriever:
         """
         Calculates time decay score. 
         - Permanent memories (expires_at is NULL) have NO decay (1.0).
-        - High importance memories (>= 4.0) have permanent weight (1.0).
+        - High importance memories (>= 8.0) have permanent weight (1.0).
         - Others follow a 48-hour half-life exponential decay.
         """
-        if not expires_at or importance >= 4.0:
+        if not expires_at or importance >= 8.0:
             return 1.0
         
         try:
@@ -112,20 +112,20 @@ class Retriever:
             graph_anchored_ids = self.graph.get_memories_by_entities(anchors)
             if graph_anchored_ids:
                 id_placeholders = ",".join(["?"] * len(graph_anchored_ids))
-                query = f"SELECT id, content_full, content_abstract, token_count_full, token_count_abstract, importance_score, learned_at, expires_at, memory_type, metadata FROM memories WHERE id IN ({id_placeholders}) AND status IN {status_filter}"
+                query = f"SELECT id, content_full, content_abstract, token_count_full, token_count_abstract, importance_score, learned_at, expires_at, memory_type, metadata, guid FROM memories WHERE id IN ({id_placeholders}) AND status IN {status_filter}"
                 cursor.execute(query, tuple(graph_anchored_ids))
                 for row in cursor.fetchall():
-                    m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp, m_type, meta = row
+                    m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp, m_type, meta, guid = row
                     decay = self._calculate_decay(lat, imp, exp)
                     
                     # Graph anchors get a boost
-                    score = (0.6 * similarity_weight) + (min(imp / 5.0, 1.0) * importance_weight) + (decay * decay_weight) + 0.2
+                    score = (0.6 * similarity_weight) + (min(imp / 10.0, 1.0) * importance_weight) + (decay * decay_weight) + 0.2
                     
                     candidates.append({
                         "id": m_id, "content_full": c_f, "content_abstract": c_a,
                         "tc_full": tc_f or (len(c_f) // 4), "tc_abstract": tc_a or (len(c_a or "") // 4),
                         "score": score, "importance": imp, "learned_at": lat, "source": "anchor",
-                        "type": m_type, "metadata": meta
+                        "type": m_type, "metadata": meta, "guid": guid
                     })
                     seen_ids.add(m_id)
 
@@ -144,26 +144,26 @@ class Retriever:
                     v_params.extend(allowed_owners)
                 
                 v_query = f"""
-                    SELECT m.id, m.content_full, m.content_abstract, m.token_count_full, m.token_count_abstract, m.importance_score, m.learned_at, m.expires_at, v.distance, m.memory_type, m.metadata
+                    SELECT m.id, m.content_full, m.content_abstract, m.token_count_full, m.token_count_abstract, m.importance_score, m.learned_at, m.expires_at, v.distance, m.memory_type, m.metadata, m.guid
                     FROM memories_vec v JOIN memories m ON v.rowid = m.id
                     WHERE v.embedding MATCH ? AND v.k = ? AND m.status IN {status_filter} {filter_clause}
                     ORDER BY v.distance ASC
                 """
                 cursor.execute(v_query, v_params)
                 for row in cursor.fetchall():
-                    m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp, dist, m_type, meta = row
+                    m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp, dist, m_type, meta, guid = row
                     if m_id in seen_ids: continue
                     
                     similarity = 1.0 / (1.0 + dist)
                     decay = 1.0 if is_fresh else self._calculate_decay(lat, imp, exp)
                     
-                    final_score = (similarity * similarity_weight) + (min(imp / 5.0, 1.0) * importance_weight) + (decay * decay_weight)
+                    final_score = (similarity * similarity_weight) + (min(imp / 10.0, 1.0) * importance_weight) + (decay * decay_weight)
                     
                     candidates.append({
                         "id": m_id, "content_full": c_f, "content_abstract": c_a,
                         "tc_full": tc_f or (len(c_f) // 4), "tc_abstract": tc_a or (len(c_a or "") // 4),
                         "score": final_score, "importance": imp, "learned_at": lat, "source": "vector",
-                        "type": m_type, "metadata": meta
+                        "type": m_type, "metadata": meta, "guid": guid
                     })
                     seen_ids.add(m_id)
             except Exception as e:
@@ -199,21 +199,21 @@ class Retriever:
                 new_ids = [i for i in linked_results.keys() if i not in seen_ids]
                 if new_ids:
                     id_placeholders = ",".join(["?"] * len(new_ids))
-                    fetch_query = f"SELECT id, content_full, content_abstract, token_count_full, token_count_abstract, importance_score, learned_at, expires_at, memory_type, metadata FROM memories WHERE id IN ({id_placeholders}) AND status IN {status_filter}"
+                    fetch_query = f"SELECT id, content_full, content_abstract, token_count_full, token_count_abstract, importance_score, learned_at, expires_at, memory_type, metadata, guid FROM memories WHERE id IN ({id_placeholders}) AND status IN {status_filter}"
                     cursor.execute(fetch_query, tuple(new_ids))
                     for row in cursor.fetchall():
-                        m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp, m_type, meta = row
+                        m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp, m_type, meta, guid = row
                         decay = self._calculate_decay(lat, imp, exp)
                         
                         # Graph boost incorporates the discovery score from graph traversal
                         discovery_boost = linked_results.get(m_id, 0.5) # Default to 0.5 if missing
-                        score = (0.4 * similarity_weight) + (min(imp / 5.0, 1.0) * importance_weight) + (discovery_boost * 0.1) + (decay * decay_weight)
+                        score = (0.4 * similarity_weight) + (min(imp / 10.0, 1.0) * importance_weight) + (discovery_boost * 0.1) + (decay * decay_weight)
                         
                         candidates.append({
                             "id": m_id, "content_full": c_f, "content_abstract": c_a,
                             "tc_full": tc_f or (len(c_f) // 4), "tc_abstract": tc_a or (len(c_a or "") // 4),
                             "score": score, "importance": imp, "learned_at": lat, "source": "graph",
-                            "type": m_type, "metadata": meta
+                            "type": m_type, "metadata": meta, "guid": guid
                         })
                         seen_ids.add(m_id)
 
@@ -236,18 +236,51 @@ class Retriever:
                     chosen_content = c["content_abstract"]; chosen_tokens = c["tc_abstract"]; version = "abstract"
             
             if chosen_content:
-                display_content = chosen_content
+                # 1. Map Metadata
+                label = "Incidental"
+                if c["importance"] >= 8.0: label = "Critical"
+                elif c["importance"] >= 4.0: label = "Relevant"
+                
+                date_str = "Unknown"
+                if c["learned_at"]:
+                    date_str = c["learned_at"].split("T")[0] if "T" in c["learned_at"] else c["learned_at"].split(" ")[0]
+                
+                location = "N/A"
+                if c.get("metadata"):
+                    try:
+                        meta_dict = json.loads(c["metadata"]) if isinstance(c["metadata"], str) else c["metadata"]
+                        location = meta_dict.get("location") or meta_dict.get("geolocation") or "N/A"
+                    except:
+                        pass
+
+                # 2. Build Structured Header
+                # We use the GUID for the unique identifier as requested
+                guid = c.get("guid") or f"mem_{c['id']}"
+                header = (
+                    f"### MEMORY ID: {guid}\n"
+                    f"- Timestamp: {date_str}\n"
+                    f"- Category: {c['type']}\n"
+                    f"- Importance: {label}\n"
+                    f"- Location: {location}\n"
+                    f"- Context:\n"
+                )
+                
+                # Indent content for clarity under the "Context:" header
+                indented_content = "  " + chosen_content.replace("\n", "\n  ")
+                display_content = header + indented_content
+
                 if c["type"] == "OBSERVATION" or c["source"] in ["graph", "anchor"]:
                     neighbors_summary = self.graph.get_neighbors_summary(c["id"])
-                    display_content += neighbors_summary
+                    if neighbors_summary:
+                        display_content += f"\n  {neighbors_summary.strip()}"
                     
                 # Hierarchical Discovery: Append Child IDs if they exist
                 if c["type"] == "OBSERVATION" and c.get("metadata"):
                     try:
-                        meta = json.loads(c["metadata"])
+                        meta = json.loads(c["metadata"]) if isinstance(c["metadata"], str) else c["metadata"]
                         child_ids = meta.get("source_ids", [])
                         if child_ids:
-                            display_content += f"\n[Nuanced Details available via recall_reverie for IDs: {child_ids}]"
+                            display_content += f"\n  [Nuanced Details available via recall_reverie for IDs: {child_ids}]"
                     except:
                         pass
 

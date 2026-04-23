@@ -337,36 +337,39 @@ class EnrichmentService:
 
     def calculate_importance(self, text: str) -> Dict[str, Any]:
         """
-        Uses BART to weigh the importance of a memory on a 1.0-5.0 scale.
+        Uses BART to weigh the importance of a memory on a 0.0-10.0 scale.
         Also suggests an expiration for low-importance transient chatter.
         """
         try:
             labels = ["critical", "important", "minor", "trivial"]
             scores = self._zero_shot_classify(text, labels, "This information is {}.")
             
-            raw_score = (scores["critical"] * 5.0) + (scores["important"] * 4.0) + (scores["minor"] * 2.0) + (scores["trivial"] * 1.0)
-            importance = max(1.0, min(5.0, raw_score))
+            # Weighted average shifted to 0-10 scale
+            raw_score = (scores["critical"] * 10.0) + (scores["important"] * 7.0) + (scores["minor"] * 3.0) + (scores["trivial"] * 1.0)
+            importance = max(0.0, min(10.0, raw_score))
             
             expires_at = None
             # If trivial or minor and conversation-heavy, suggest expiration (7 days)
-            if importance < 3.0:
+            # 5.0 is the new midpoint for 0-10 scale
+            if importance < 5.0:
                 from datetime import datetime, timedelta
                 expires_at = (datetime.utcnow() + timedelta(days=7)).isoformat()
                 
             # Heuristic Boosts (Sentiment & Keywords)
+            text_lower = text.lower()
             frustrated_terms = ["frustrated", "error", "failing", "broken", "help", "worst"]
-            if any(term in text.lower() for term in frustrated_terms):
-                importance = min(5.0, importance + 1.5)
+            if any(term in text_lower for term in frustrated_terms):
+                importance = min(10.0, importance + 3.0)
                 
             important_keywords = ["deadline", "critical", "password", "secret", "project"]
-            if any(kw in text.lower() for kw in important_keywords):
-                importance = min(5.0, importance + 0.5)
+            if any(kw in text_lower for kw in important_keywords):
+                importance = min(10.0, importance + 1.0)
 
             return {"score": importance, "expires_at": expires_at}
 
         except Exception as e:
             logger.warning(f"Importance scoring failed: {e}")
-            return {"score": 1.0, "expires_at": None}
+            return {"score": 2.0, "expires_at": None}
 
     def classify_type(self, text: str) -> MemoryType:
         """Robust zero-shot classification using BART."""
