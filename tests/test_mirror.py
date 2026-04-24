@@ -140,8 +140,10 @@ def test_graph_integrity_across_mirror(test_env):
             VALUES (?, 'MEMORY', ?, 'ENTITY', 'MENTIONS')
         """, (id_a, id_e))
 
-    # 2. Export Memory A (should include associations in frontmatter)
+    # 2. Export Memory A and Memory B (should include associations in frontmatter)
     mirror.export_node(id_a)
+    mirror.export_node(id_b)
+    # Note: Entities don't have their own .md files yet, but they are referenced in Memory A's frontmatter.
     
     # 3. Wipe and Import
     with db.write_lock() as cursor:
@@ -154,11 +156,26 @@ def test_graph_integrity_across_mirror(test_env):
     restored_a = db.get_memory_by_guid(guid_a)
     assert restored_a is not None
     
+    # In the second pass, we also imported Memory B and Entity E
+    restored_b = db.get_memory_by_guid(guid_b)
+    assert restored_b is not None
+    
+    # Restore associations should have linked them
     assocs = db.get_associations_for_node(restored_a['id'], 'MEMORY')
-    # Note: import_archive currently only restores memories and NOT associations yet in the implementation!
-    # Wait, looking at mirror.py, _import_file has a TODO for associations.
-    # I should implement that and update the test.
-    # For now, let's just assert the memories returned.
+    assert len(assocs) >= 2
+    
+    # Check for PRECEEDS link to B
+    preceeds = [a for a in assocs if a['association_type'] == 'PRECEEDS']
+    assert len(preceeds) == 1
+    assert preceeds[0]['target_id'] == restored_b['id']
+    
+    # Check for MENTIONS link to E
+    mentions = [a for a in assocs if a['association_type'] == 'MENTIONS']
+    assert len(mentions) == 1
+    # We need to find Entity E's restored ID
+    restored_e = db.get_entity_by_guid(guid_e)
+    assert restored_e is not None
+    assert mentions[0]['target_id'] == restored_e['id']
 
 def test_lazy_revectorization_worker(test_env):
     db, enrichment, mirror, archive_path = test_env

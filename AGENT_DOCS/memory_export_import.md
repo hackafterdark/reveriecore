@@ -1,59 +1,67 @@
 # Technical Specification: Memory-as-Code (Markdown Mirror)
 
 ## 1. Overview
-To ensure data sovereignty, portability, and "brain" disaster recovery, `ReverieCore` will implement a bi-directional synchronization system between the SQLite runtime and a local filesystem-based Markdown archive.
+To ensure data sovereignty, portability, and "brain" disaster recovery, `ReverieCore` implements a bi-directional synchronization system between the SQLite runtime and a local filesystem-based Markdown archive.
 
 ## 2. The "Mirror" Philosophy
 - **Runtime State (SQLite):** Used for performance, high-speed vector retrieval, and `MesaService` operations.
-- **Source of Truth (Markdown + Frontmatter):** Used for archival, human-readability, and cross-platform portability.
+*   **Source of Truth (Markdown + Frontmatter):** Used for archival, human-readability, and cross-platform portability. This allows for database-less graph traversal and complete reconstruction of the agent's memory.
 
 ## 3. Data Structure (The "Memory Passport")
-Every memory node will be exported as an independent `.md` file with standardized YAML frontmatter.
+Every memory node is exported as an independent `.md` file with standardized YAML frontmatter (v1.1).
 
-```markdown
+### 3.1. Frontmatter Schema (v1.1)
+```yaml
 ---
-id: "mem_abc123"
-learned_at: "YYYY-MM-DDTHH:MM:SSZ"
-importance_score: 4.5
-memory_type: "OBSERVATION"
+version: "1.1"
+guid: "36790355-5589-444f-be5f-2f8a12e952b4"
+path: "year=2026/month=04/day=24/36790355-5589-444f-be5f-2f8a12e952b4.md"
+type: "RUNTIME_ERROR"
+importance: 4.02081298828125
 status: "ACTIVE"
+owner: "default"
+learned_at: "2026-04-24T02:28:10Z"
 associations:
+  - name: "sqlite-vec"
+    label: "LIBRARY"
+    type: "MENTIONS"
+    node_type: "ENTITY"
+    confidence: 1.0
+    guid: "ce73d3b9-2c36-4840-9a25-7c865f5a296f"
+    role: "target"
+    description: "High-performance vector similarity search for SQLite"
   - type: "CHILD_OF"
-    target: "mem_xyz789"
-  - type: "SUPERSEDES"
-    target: "mem_def456"
+    node_type: "MEMORY"
+    confidence: 1.0
+    guid: "1b547e1e-937d-496a-8eff-7c628817f9e1"
+    role: "target"
+metadata: {}
 ---
-
-# [Title/Summary]
-[Raw text content of the memory]
 ```
 
-## 3.4. Implementation Requirements
-A. Export Utility (export_memory(memory_id))
-- Reads the node from SQLite.
-- Serializes Association table records into the YAML associations block.
-- Generates a file named `{id}.md` in a partitioned directory structure.
-- **Hive-Style Partitioning**: To ensure performance and scalability, files are stored in:
-  `archive/year=YYYY/month=MM/day=DD/{id}.md`
-B. Bulk Mirroring (MesaService Integration)
-- The MesaService will include a mirror_to_disk() task.
-- Trigger: Every time a node transitions from ACTIVE to ARCHIVED (or during initial creation), the mirror is updated.
-- Performance: Use last_modified checks to avoid redundant disk I/O.
+### 3.2. Directory Structure
+Files are stored using Hive-style partitioning for scalability:
+`~/.hermes/reverie_archive/year=YYYY/month=MM/day=DD/{guid}.md`
 
-C. The "Re-Birth" Tool (sync_from_markdown(path))
-- Parser: Uses PyYAML to ingest the frontmatter.
-- Upsert Logic:
-    1. Check if id exists in SQLite.
-    2. If exists: UPDATE existing record.
-    3. If missing: INSERT new record.
-- Graph Reconstruction: Re-reads the associations block to re-establish edge connections in the association table.
-- Re-Embedding: Triggers a background process to re-generate the vector index (sqlite-vec) for the imported text.
+## 4. Implementation Details
 
-5. Benefits
-- Vendor Agnostic: You can move your agent memory to any system that supports Markdown.
-- Disaster Recovery: A corrupted .db file is no longer a terminal loss of your "Brain."
-- Searchable: You can use standard OS search tools (grep, ripgrep, Obsidian, VS Code) to search your memory outside of the agent's constraints.
+### 4.1. Export Logic
+- **Identity**: Uses globally unique `guid` for filenames and cross-reference instead of volatile integer IDs.
+- **Self-Describing**: The `path` field in frontmatter allows external tools to know exactly where the file lives in the Hive hierarchy.
+- **Entity Metadata**: Associations to entities include `name`, `label`, and `description` directly in the memory's frontmatter. This enables full graph restoration even if the `entities` table is lost.
 
-6. Edge Cases to Handle
-- Vector Index Regeneration: Acknowledge that upon import, the vector store (sqlite-vec) will be empty and require a re-index cycle.
-- Collision Handling: What happens if an id in Markdown differs from the one in the DB during a sync? (Strategy: Trust the Markdown/Frontmatter as the source of truth).
+### 4.2. Import & Disaster Recovery
+- **Pass 1: Node Restoration**: Reconstructs `memories` records. Matches existing nodes via `guid`.
+- **Pass 2: Graph Re-linking**: Re-establishes records in `memory_associations`. 
+- **Auto-Restoration**: If an associated `ENTITY` is missing from the database, the system automatically recreates it using the metadata stored in the memory file.
+- **Re-Embedding**: Triggers background re-vectorization for imported memories to populate the `memories_vec` table.
+
+### 4.3. Tooling
+- **Agent Tool**: `mirror_archive(action="export"|"import")` allows the agent to trigger bulk synchronization on demand.
+- **Manual Control**: Exports can be triggered during the `MesaService` pruning cycle or via manual developer intervention.
+
+## 5. Benefits
+- **Database-less Traversal**: Using `grep` or Markdown editors (Obsidian, VS Code), you can follow the memory graph via GUIDs and paths without SQL.
+- **Total Recovery**: A deleted `.db` file can be 100% reconstructed from the Markdown archive.
+- **Human Readable**: Memory "fragments" and "anchors" are stored as clean, readable Markdown.
+- **Vendor Agnostic**: You can move your agent memory to any system that supports Markdown.

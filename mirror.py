@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from datetime import datetime
 import threading
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 import uuid
 
 logger = logging.getLogger(__name__)
@@ -87,6 +87,19 @@ class MirrorService:
             tc_abstract
         )
 
+    def _get_relative_path(self, memory_dict: dict) -> str:
+        """Derives the Hive-style relative path for a memory."""
+        learned_at = memory_dict.get("learned_at")
+        guid = memory_dict.get("guid")
+        if isinstance(learned_at, str):
+            try:
+                dt = datetime.fromisoformat(learned_at.replace('Z', '+00:00'))
+            except ValueError:
+                dt = datetime.now()
+        else:
+            dt = learned_at or datetime.now()
+        return f"year={dt.year:04d}/month={dt.month:02d}/day={dt.day:02d}/{guid}.md"
+
     def export_node(self, memory_id: int):
         """Fetches a memory and mirrors it to the local Markdown archive."""
         try:
@@ -100,78 +113,97 @@ class MirrorService:
                 logger.warning(f"Cannot export memory {memory_id}: missing GUID.")
                 return
 
-            # 2. Get Associations
-            associations = self.db.get_associations_for_node(memory_id, 'MEMORY')
-            assoc_data = []
-            for a in associations:
-                # We need GUIDs for the targets/sources to maintain portability
-                target_guid = self._get_guid_for_node(a['target_id'], a['target_type'])
-                source_guid = self._get_guid_for_node(a['source_id'], a['source_type'])
-                assoc_data.append({
-                    "source": source_guid,
-                    "target": target_guid,
-                    "type": a['association_type'],
-                    "confidence": a['confidence_score']
-                })
-
-            # 3. Build Frontmatter
+            # 1.5 Parse DateTime for formatting
             learned_at = memory.get("learned_at")
             if isinstance(learned_at, str):
-                dt = datetime.fromisoformat(learned_at.replace('Z', '+00:00'))
+                try:
+                    # Handle both ISO and SQLite formats
+                    dt = datetime.fromisoformat(learned_at.replace(' ', 'T').replace('Z', '+00:00'))
+                except ValueError:
+                    dt = datetime.now()
             else:
                 dt = learned_at or datetime.now()
-            
+
+            # 2. Build Frontmatter
+            rel_path = self._get_relative_path(memory)
             frontmatter = {
-                "version": "1.0",
+                "version": "1.1",
                 "guid": guid,
+                "path": rel_path,
                 "type": memory.get("memory_type"),
                 "importance": memory.get("importance_score"),
                 "status": memory.get("status"),
                 "owner": memory.get("owner_id"),
-                "learned_at": learned_at,
+                "learned_at": dt.strftime('%Y-%m-%dT%H:%M:%SZ'),
                 "associations": [],
                 "metadata": json.loads(memory.get("metadata") or "{}")
             }
 
-            # Add associations
+            # 3. Add Associations with paths
             assocs = self.db.get_associations_for_node(memory_id, "MEMORY")
             for a in assocs:
-                # We resolve local IDs to stable GUIDs for the archive
-                source_guid = None
-                target_guid = None
+                other_guid = None
+                other_node_type = None
+                other_name = None
+                other_label = None
+                other_description = None
+                role = "target"
                 
-                # Resolve Source
-                if a["source_type"] == "MEMORY":
-                    s = self.db.get_memory(a["source_id"])
-                    source_guid = s["guid"] if s else None
+                # Determine "the other node"
+                if a["source_id"] == memory_id and a["source_type"] == "MEMORY":
+                    # We are the source, other is target
+                    role = "target"
+                    other_node_type = a["target_type"]
+                    if other_node_type == "MEMORY":
+                        t = self.db.get_memory(a["target_id"])
+                        if t:
+                            other_guid = t["guid"]
+                    else:
+                        t = self.db.get_entity(a["target_id"])
+                        if t:
+                            other_guid = t["guid"]
+                            other_name = t.get("name")
+                            other_label = t.get("label")
+                            other_description = t.get("description")
                 else:
-                    s = self.db.get_entity(a["source_id"])
-                    source_guid = s["guid"] if s else None
+                    # We are the target, other is source
+                    role = "source"
+                    other_node_type = a["source_type"]
+                    if other_node_type == "MEMORY":
+                        s = self.db.get_memory(a["source_id"])
+                        if s:
+                            other_guid = s["guid"]
+                    else:
+                        s = self.db.get_entity(a["source_id"])
+                        if s:
+                            other_guid = s["guid"]
+                            other_name = s.get("name")
+                            other_label = s.get("label")
+                            other_description = s.get("description")
+                
+                if other_guid:
+                    # Construct with specific key order
+                    assoc_entry = {}
+                    if other_node_type == "ENTITY":
+                        assoc_entry["name"] = other_name or "unknown"
+                        assoc_entry["label"] = other_label or "unknown"
                     
-                # Resolve Target
-                if a["target_type"] == "MEMORY":
-                    t = self.db.get_memory(a["target_id"])
-                    target_guid = t["guid"] if t else None
-                else:
-                    t = self.db.get_entity(a["target_id"])
-                    target_guid = t["guid"] if t else None
-                    
-                if source_guid and target_guid:
-                    frontmatter["associations"].append({
-                        "source_guid": source_guid,
-                        "source_type": a["source_type"],
-                        "target_guid": target_guid,
-                        "target_type": a["target_type"],
-                        "association_type": a["association_type"],
-                        "confidence": a.get("confidence_score", 1.0)
-                    })
+                    assoc_entry["type"] = a["association_type"]
+                    assoc_entry["node_type"] = other_node_type
+                    assoc_entry["confidence"] = a.get("confidence_score", 1.0)
+                    assoc_entry["guid"] = other_guid
+                    assoc_entry["role"] = role
 
-            # 4. Hive Pathing: archive/year=YYYY/month=MM/day=DD/{guid}.md
-            path = self.archive_root / f"year={dt.year:04d}" / f"month={dt.month:02d}" / f"day={dt.day:02d}"
-            path.mkdir(parents=True, exist_ok=True)
-            file_path = path / f"{guid}.md"
+                    if other_node_type == "ENTITY" and other_description:
+                        assoc_entry["description"] = other_description
+                        
+                    frontmatter["associations"].append(assoc_entry)
 
-            # 5. Write File
+            # 4. Write File
+            dt_path = self.archive_root / Path(rel_path).parent
+            dt_path.mkdir(parents=True, exist_ok=True)
+            file_path = self.archive_root / rel_path
+
             yaml_block = self._dump_yaml(frontmatter)
             content = memory.get("content_full", "")
             
@@ -214,34 +246,73 @@ class MirrorService:
     def _restore_associations(self, all_frontmatters: list[dict]):
         """Re-links memories and entities using stable GUIDs."""
         for fm in all_frontmatters:
+            current_guid = fm.get("guid")
+            if not current_guid:
+                continue
             assocs = fm.get("associations", [])
             for a in assocs:
                 try:
-                    self._link_association(a)
+                    self._link_association(current_guid, a)
                 except Exception as e:
                     logger.error(f"Failed to restore association {a}: {e}")
 
-    def _link_association(self, a: dict):
+    def _link_association(self, current_guid: str, a: dict):
         """Resolves GUIDs to local IDs and creates the association record."""
-        source_guid = a["source_guid"]
-        target_guid = a["target_guid"]
+        # Handle new format
+        if "role" in a:
+            if a["role"] == "target":
+                source_guid = current_guid
+                source_type = "MEMORY" # Assuming current is always MEMORY for now
+                target_guid = a["guid"]
+                target_type = a.get("node_type", "MEMORY")
+            else:
+                source_guid = a["guid"]
+                source_type = a.get("node_type", "MEMORY")
+                target_guid = current_guid
+                target_type = "MEMORY"
+            assoc_type = a["type"]
+        else:
+            # Fallback for old format
+            source_guid = a.get("source_guid")
+            source_type = a.get("source_type", "MEMORY")
+            target_guid = a.get("target_guid")
+            target_type = a.get("target_type", "MEMORY")
+            assoc_type = a.get("association_type")
         
+        if not source_guid or not target_guid:
+            return
+            
         # Resolve local IDs
         source_id = None
-        if a["source_type"] == "MEMORY":
+        if source_type == "MEMORY":
             s = self.db.get_memory_by_guid(source_guid)
             source_id = s["id"] if s else None
         else:
             s = self.db.get_entity_by_guid(source_guid)
-            source_id = s["id"] if s else None
+            if not s and source_type == "ENTITY" and "name" in a:
+                with self.db.write_lock() as cursor:
+                    cursor.execute("""
+                        INSERT INTO entities (name, label, guid, description) VALUES (?, ?, ?, ?)
+                    """, (a["name"], a.get("label", "ENTITY"), source_guid, a.get("description")))
+                    source_id = cursor.lastrowid
+            else:
+                source_id = s["id"] if s else None
             
         target_id = None
-        if a["target_type"] == "MEMORY":
+        if target_type == "MEMORY":
             t = self.db.get_memory_by_guid(target_guid)
             target_id = t["id"] if t else None
         else:
             t = self.db.get_entity_by_guid(target_guid)
-            target_id = t["id"] if t else None
+            if not t and target_type == "ENTITY" and "name" in a:
+                # Disaster Recovery: Recreate entity from association metadata
+                with self.db.write_lock() as cursor:
+                    cursor.execute("""
+                        INSERT INTO entities (name, label, guid, description) VALUES (?, ?, ?, ?)
+                    """, (a["name"], a.get("label", "ENTITY"), target_guid, a.get("description")))
+                    target_id = cursor.lastrowid
+            else:
+                target_id = t["id"] if t else None
             
         if source_id and target_id:
             with self.db.write_lock() as cursor:
@@ -251,14 +322,14 @@ class MirrorService:
                     WHERE source_id = ? AND source_type = ? 
                     AND target_id = ? AND target_type = ? 
                     AND association_type = ?
-                """, (source_id, a["source_type"], target_id, a["target_type"], a["association_type"]))
+                """, (source_id, source_type, target_id, target_type, assoc_type))
                 
                 if not cursor.fetchone():
                     cursor.execute("""
                         INSERT INTO memory_associations (
                             source_id, source_type, target_id, target_type, association_type, confidence_score
                         ) VALUES (?, ?, ?, ?, ?, ?)
-                    """, (source_id, a["source_type"], target_id, a["target_type"], a["association_type"], a.get("confidence", 1.0)))
+                    """, (source_id, source_type, target_id, target_type, assoc_type, a.get("confidence", 1.0)))
 
     def _import_file(self, file_path: Path) -> Optional[dict]:
         """Imports a single markdown file into the database."""
@@ -286,27 +357,8 @@ class MirrorService:
                     abstract = body[2:].strip()
                     body = ""
 
-            # Naive YAML loader
-            frontmatter = {}
-            for line in yaml_content.split("\n"):
-                if ":" in line:
-                    k, v = line.split(":", 1)
-                    k = k.strip()
-                    v = v.strip()
-                    # Handle basic types
-                    if v.startswith("[") and v.endswith("]"):
-                        try:
-                            v = json.loads(v)
-                        except: pass
-                    elif v.startswith("{"):
-                        try:
-                            v = json.loads(v)
-                        except: pass
-                    elif v.lower() == "true": v = True
-                    elif v.lower() == "false": v = False
-                    elif v.isdigit(): v = int(v)
-                    elif v.startswith('"') and v.endswith('"'): v = v[1:-1]
-                    frontmatter[k] = v
+            # Use the improved _load_yaml
+            frontmatter = self._load_yaml(yaml_content.split("\n"))
             
             guid = frontmatter.get("guid")
             if not guid:
@@ -366,30 +418,85 @@ class MirrorService:
         return row[0] if row else None
 
     def _dump_yaml(self, data: Dict) -> str:
-        """Naive YAML dumper for simple structures."""
+        """Naive YAML dumper. Supports multi-line indented lists."""
         lines = []
         for k, v in data.items():
-            if isinstance(v, (dict, list)):
+            if isinstance(v, list):
+                lines.append(f"{k}:")
+                for item in v:
+                    if isinstance(item, dict):
+                        first = True
+                        for ik, iv in item.items():
+                            val = json.dumps(iv) if isinstance(iv, (dict, list)) else iv
+                            if first:
+                                lines.append(f"  - {ik}: {val}")
+                                first = False
+                            else:
+                                lines.append(f"    {ik}: {val}")
+                    else:
+                        lines.append(f"  - {v}")
+            elif isinstance(v, dict):
                 lines.append(f"{k}: {json.dumps(v)}")
             else:
                 lines.append(f"{k}: {v}")
         return "\n".join(lines) + "\n"
 
     def _load_yaml(self, lines: List[str]) -> Dict:
-        """Naive YAML loader for simple key-value pairs and JSON fields."""
+        """Naive YAML loader supporting multi-line indented lists."""
         data = {}
+        current_key = None
+        current_item = None
+        
         for line in lines:
-            line = line.strip()
-            if not line or ":" not in line:
+            if not line.strip() or line.strip().startswith("#"):
                 continue
-            k, v = line.split(":", 1)
-            k = k.strip()
-            v = v.strip()
-            # Try parsing as JSON if it looks like a list or dict
-            if v.startswith("[") or v.startswith("{"):
-                try:
-                    v = json.loads(v)
-                except:
-                    pass
-            data[k] = v
+            
+            indent = len(line) - len(line.lstrip())
+            clean = line.strip()
+            
+            if clean.startswith("- "):
+                val = clean[2:].strip()
+                if ":" in val:
+                    ik, iv = val.split(":", 1)
+                    current_item = {ik.strip(): self._parse_val(iv.strip())}
+                    if current_key:
+                        if not isinstance(data.get(current_key), list):
+                            data[current_key] = []
+                        data[current_key].append(current_item)
+                else:
+                    if current_key:
+                        if not isinstance(data.get(current_key), list):
+                            data[current_key] = []
+                        data[current_key].append(self._parse_val(val))
+                continue
+            
+            if ":" in clean:
+                k, v = clean.split(":", 1)
+                k = k.strip()
+                v = v.strip()
+                
+                if indent >= 4 and current_item is not None:
+                    current_item[k] = self._parse_val(v)
+                else:
+                    current_key = k
+                    if not v:
+                        data[current_key] = []
+                    else:
+                        data[current_key] = self._parse_val(v)
+                    current_item = None
         return data
+
+    def _parse_val(self, v: str) -> Any:
+        """Helper to parse YAML values."""
+        if not v: return None
+        if v.startswith('"') and v.endswith('"'): return v[1:-1]
+        if v.lower() == "true": return True
+        if v.lower() == "false": return False
+        if (v.startswith("[") and v.endswith("]")) or (v.startswith("{") and v.endswith("}")):
+            try: return json.loads(v)
+            except: pass
+        try:
+            if "." in v: return float(v)
+            return int(v)
+        except: pass
+        return v

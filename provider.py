@@ -410,12 +410,42 @@ class ReverieMemoryProvider(MemoryProvider):
                     },
                     "required": ["memory_id"]
                 }
+            },
+            {
+                "name": "mirror_archive",
+                "description": "Synchronize the internal database with the local Markdown archive (Memory-as-Code). Use 'export' to back up all active memories to disk, or 'import' to ingest memories from an existing archive.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["export", "import"],
+                            "description": "The action to perform: 'export' (DB -> Disk) or 'import' (Disk -> DB)."
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "Optional: Specific path to import from (defaults to the standard archive root)."
+                        }
+                    },
+                    "required": ["action"]
+                }
             }
         ]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if tool_name == "recall_reverie":
             return self._handle_recall_reverie(args.get("memory_id"))
+
+        if tool_name == "mirror_archive":
+            action = args.get("action")
+            if action == "export":
+                self.export_all_memories()
+                return "Bulk export to Markdown archive completed successfully."
+            elif action == "import":
+                path = args.get("path")
+                self.import_from_archive(path)
+                return "Archive import and synchronization completed successfully."
+            return tool_error(f"Unsupported mirror action: {action}")
 
         if tool_name != "memory":
             return tool_error(f"Unknown tool: {tool_name}")

@@ -27,6 +27,7 @@ This table stores the rich, structured content of every memory.
 ```sql
 CREATE TABLE memories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guid TEXT UNIQUE,                -- Globally Unique ID for archival sync
     
     -- CORE CONTENT
     content_full TEXT NOT NULL,      -- Full raw text or transcript
@@ -54,6 +55,7 @@ CREATE TABLE memories (
     -- LIFECYCLE
     learned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    status TEXT DEFAULT 'ACTIVE',    -- ACTIVE, ARCHIVED, PURGED
     expires_at DATETIME
 );
 ```
@@ -94,6 +96,7 @@ This table stores canonical entities extracted from memories (files, classes, co
 ```sql
 CREATE TABLE entities (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guid TEXT UNIQUE,                -- Globally Unique ID for archival sync
     name TEXT NOT NULL UNIQUE,       -- Canonical name (e.g. 'database.py')
     label TEXT NOT NULL,             -- Type (e.g. 'FILE', 'CLASS', 'TOOL')
     description TEXT,                -- Unified summary from all mentions
