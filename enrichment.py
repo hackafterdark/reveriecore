@@ -5,6 +5,7 @@ import re
 import urllib.request
 import traceback
 import threading
+import uuid
 from typing import List, Dict, Optional, Any
 from pathlib import Path
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoModelForSequenceClassification
