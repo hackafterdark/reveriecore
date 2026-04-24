@@ -94,9 +94,9 @@ class MesaService:
             candidate_query = f"""
                 SELECT m.id FROM memories m
                 LEFT JOIN (
-                    SELECT source_id as node_id FROM memory_associations WHERE source_type = 'MEMORY'
+                    SELECT source_id as node_id FROM memory_relations WHERE source_type = 'MEMORY'
                     UNION ALL
-                    SELECT target_id as node_id FROM memory_associations WHERE target_type = 'MEMORY'
+                    SELECT target_id as node_id FROM memory_relations WHERE target_type = 'MEMORY'
                 ) a ON m.id = a.node_id
                 WHERE m.importance_score < ?
                 AND m.last_accessed_at < datetime('now', ?)
@@ -149,7 +149,7 @@ class MesaService:
             
             query = f"""
                 SELECT e.id, e.name, COUNT(ma.source_id) as c_count, GROUP_CONCAT(ma.source_id) as member_ids
-                FROM memory_associations ma
+                FROM memory_relations ma
                 JOIN entities e ON ma.target_id = e.id
                 JOIN memories m ON ma.source_id = m.id
                 WHERE ma.source_type = 'MEMORY' 
@@ -214,13 +214,13 @@ class MesaService:
                 for mid in member_ids:
                     # CHILD_OF link
                     cursor.execute("""
-                        INSERT INTO memory_associations (source_id, source_type, target_id, target_type, association_type)
+                        INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type)
                         VALUES (?, 'MEMORY', ?, 'MEMORY', 'CHILD_OF')
                     """, (mid, anchor_id))
                     
                     # Also keep SUPERSEDES for backward compatibility
                     cursor.execute("""
-                        INSERT INTO memory_associations (source_id, source_type, target_id, target_type, association_type)
+                        INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type)
                         VALUES (?, 'MEMORY', ?, 'MEMORY', 'SUPERSEDES')
                     """, (anchor_id, mid))
                     
@@ -233,7 +233,7 @@ class MesaService:
 
                 # 5. Link anchor to entity
                 cursor.execute("""
-                    INSERT INTO memory_associations (source_id, source_type, target_id, target_type, association_type)
+                    INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type)
                     VALUES (?, 'MEMORY', ?, 'ENTITY', 'MENTIONS')
                 """, (anchor_id, entity_id))
 

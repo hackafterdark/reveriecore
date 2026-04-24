@@ -107,13 +107,13 @@ CREATE TABLE entities (
 
 ---
 
-## 4. `memory_associations` Table (Polymorphic Graph)
+## 4. `memory_relations` Table (Polymorphic Graph)
 
 Maps the links between memories and entities to create a multi-layer knowledge graph for Reverie Core.
 
 ```sql
-CREATE TABLE memory_associations (
-    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+CREATE TABLE memory_relations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     
     -- SOURCE NODE
     source_id INTEGER NOT NULL,
@@ -124,11 +124,12 @@ CREATE TABLE memory_associations (
     target_type TEXT NOT NULL,       -- 'MEMORY' or 'ENTITY'
     
     -- EDGE PROPERTIES
-    association_type TEXT NOT NULL,  -- e.g., 'PART_OF', 'DEPENDS_ON', 'MENTIONS'
+    relation_type TEXT NOT NULL,  -- e.g., 'PART_OF', 'DEPENDS_ON', 'MENTIONS'
     evidence_memory_id INTEGER,      -- Links to the memory that proved this link
-    confidence REAL DEFAULT 1.0,     -- ML-derived extraction confidence
+    confidence_score REAL DEFAULT 1.0,     -- ML-derived extraction confidence
     
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (evidence_memory_id) REFERENCES memories(id) ON DELETE CASCADE
 );
 ```
 

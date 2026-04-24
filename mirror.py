@@ -127,7 +127,7 @@ class MirrorService:
             # 2. Build Frontmatter
             rel_path = self._get_relative_path(memory)
             frontmatter = {
-                "version": "1.1",
+                "version": "1.0",
                 "guid": guid,
                 "path": rel_path,
                 "type": memory.get("memory_type"),
@@ -135,13 +135,13 @@ class MirrorService:
                 "status": memory.get("status"),
                 "owner": memory.get("owner_id"),
                 "learned_at": dt.strftime('%Y-%m-%dT%H:%M:%SZ'),
-                "associations": [],
+                "relations": [],
                 "metadata": json.loads(memory.get("metadata") or "{}")
             }
 
-            # 3. Add Associations with paths
-            assocs = self.db.get_associations_for_node(memory_id, "MEMORY")
-            for a in assocs:
+            # 3. Add Relations with paths
+            rel_rows = self.db.get_relations_for_node(memory_id, "MEMORY")
+            for a in rel_rows:
                 other_guid = None
                 other_node_type = None
                 other_name = None
@@ -188,7 +188,7 @@ class MirrorService:
                         assoc_entry["name"] = other_name or "unknown"
                         assoc_entry["label"] = other_label or "unknown"
                     
-                    assoc_entry["type"] = a["association_type"]
+                    assoc_entry["type"] = a["relation_type"]
                     assoc_entry["node_type"] = other_node_type
                     assoc_entry["confidence"] = a.get("confidence_score", 1.0)
                     assoc_entry["guid"] = other_guid
@@ -197,7 +197,7 @@ class MirrorService:
                     if other_node_type == "ENTITY" and other_description:
                         assoc_entry["description"] = other_description
                         
-                    frontmatter["associations"].append(assoc_entry)
+                    frontmatter["relations"].append(assoc_entry)
 
             # 4. Write File
             dt_path = self.archive_root / Path(rel_path).parent
@@ -238,46 +238,46 @@ class MirrorService:
             except Exception as e:
                 logger.error(f"Failed to import {file_path}: {e}")
                 
-        # 2. Second Pass: Restore associations
-        self._restore_associations(all_frontmatters)
+        # 2. Second Pass: Restore relations
+        self._restore_relations(all_frontmatters)
         
         logger.info(f"Mirror import complete. Processed {len(all_frontmatters)} files.")
 
-    def _restore_associations(self, all_frontmatters: list[dict]):
+    def _restore_relations(self, all_frontmatters: list[dict]):
         """Re-links memories and entities using stable GUIDs."""
         for fm in all_frontmatters:
             current_guid = fm.get("guid")
             if not current_guid:
                 continue
-            assocs = fm.get("associations", [])
-            for a in assocs:
+            rels = fm.get("relations") or fm.get("associations") or []
+            for r in rels:
                 try:
-                    self._link_association(current_guid, a)
+                    self._link_relation(current_guid, r)
                 except Exception as e:
-                    logger.error(f"Failed to restore association {a}: {e}")
+                    logger.error(f"Failed to restore relation {r}: {e}")
 
-    def _link_association(self, current_guid: str, a: dict):
-        """Resolves GUIDs to local IDs and creates the association record."""
+    def _link_relation(self, current_guid: str, r: dict):
+        """Resolves GUIDs to local IDs and creates the relation record."""
         # Handle new format
-        if "role" in a:
-            if a["role"] == "target":
+        if "role" in r:
+            if r["role"] == "target":
                 source_guid = current_guid
                 source_type = "MEMORY" # Assuming current is always MEMORY for now
-                target_guid = a["guid"]
-                target_type = a.get("node_type", "MEMORY")
+                target_guid = r["guid"]
+                target_type = r.get("node_type", "MEMORY")
             else:
-                source_guid = a["guid"]
-                source_type = a.get("node_type", "MEMORY")
+                source_guid = r["guid"]
+                source_type = r.get("node_type", "MEMORY")
                 target_guid = current_guid
                 target_type = "MEMORY"
-            assoc_type = a["type"]
+            rel_type = r["type"]
         else:
             # Fallback for old format
-            source_guid = a.get("source_guid")
-            source_type = a.get("source_type", "MEMORY")
-            target_guid = a.get("target_guid")
-            target_type = a.get("target_type", "MEMORY")
-            assoc_type = a.get("association_type")
+            source_guid = r.get("source_guid")
+            source_type = r.get("source_type", "MEMORY")
+            target_guid = r.get("target_guid")
+            target_type = r.get("target_type", "MEMORY")
+            rel_type = r.get("relation_type") or r.get("relation_type")
         
         if not source_guid or not target_guid:
             return
@@ -289,11 +289,11 @@ class MirrorService:
             source_id = s["id"] if s else None
         else:
             s = self.db.get_entity_by_guid(source_guid)
-            if not s and source_type == "ENTITY" and "name" in a:
+            if not s and source_type == "ENTITY" and "name" in r:
                 with self.db.write_lock() as cursor:
                     cursor.execute("""
                         INSERT INTO entities (name, label, guid, description) VALUES (?, ?, ?, ?)
-                    """, (a["name"], a.get("label", "ENTITY"), source_guid, a.get("description")))
+                    """, (r["name"], r.get("label", "ENTITY"), source_guid, r.get("description")))
                     source_id = cursor.lastrowid
             else:
                 source_id = s["id"] if s else None
@@ -304,12 +304,12 @@ class MirrorService:
             target_id = t["id"] if t else None
         else:
             t = self.db.get_entity_by_guid(target_guid)
-            if not t and target_type == "ENTITY" and "name" in a:
-                # Disaster Recovery: Recreate entity from association metadata
+            if not t and target_type == "ENTITY" and "name" in r:
+                # Disaster Recovery: Recreate entity from relation metadata
                 with self.db.write_lock() as cursor:
                     cursor.execute("""
                         INSERT INTO entities (name, label, guid, description) VALUES (?, ?, ?, ?)
-                    """, (a["name"], a.get("label", "ENTITY"), target_guid, a.get("description")))
+                    """, (r["name"], r.get("label", "ENTITY"), target_guid, r.get("description")))
                     target_id = cursor.lastrowid
             else:
                 target_id = t["id"] if t else None
@@ -318,18 +318,18 @@ class MirrorService:
             with self.db.write_lock() as cursor:
                 # Check if exists
                 cursor.execute("""
-                    SELECT id FROM memory_associations 
+                    SELECT id FROM memory_relations 
                     WHERE source_id = ? AND source_type = ? 
                     AND target_id = ? AND target_type = ? 
-                    AND association_type = ?
-                """, (source_id, source_type, target_id, target_type, assoc_type))
+                    AND relation_type = ?
+                """, (source_id, source_type, target_id, target_type, rel_type))
                 
                 if not cursor.fetchone():
                     cursor.execute("""
-                        INSERT INTO memory_associations (
-                            source_id, source_type, target_id, target_type, association_type, confidence_score
+                        INSERT INTO memory_relations (
+                            source_id, source_type, target_id, target_type, relation_type, confidence_score
                         ) VALUES (?, ?, ?, ?, ?, ?)
-                    """, (source_id, source_type, target_id, target_type, assoc_type, a.get("confidence", 1.0)))
+                    """, (source_id, source_type, target_id, target_type, rel_type, r.get("confidence", 1.0)))
 
     def _import_file(self, file_path: Path) -> Optional[dict]:
         """Imports a single markdown file into the database."""

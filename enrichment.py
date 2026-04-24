@@ -11,7 +11,7 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoModelForSeque
 import torch
 import torch.nn.functional as F
 from sentence_transformers import SentenceTransformer
-from .schemas import MemoryType, AssociationType
+from .schemas import MemoryType, RelationType
 
 logger = logging.getLogger(__name__)
 
@@ -479,7 +479,7 @@ class EnrichmentService:
                 
                 # Restore MENTIONS link (Memory -> Entity)
                 cursor.execute("""
-                    INSERT INTO memory_associations (source_id, source_type, target_id, target_type, association_type)
+                    INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type)
                     VALUES (?, 'MEMORY', ?, 'ENTITY', 'MENTIONS')
                 """, (memory_id, entity_map[name]))
 
@@ -489,7 +489,7 @@ class EnrichmentService:
             # Pass 2: Extract Triples using Entity names
             # We ask for triples between identified entities
             triple_prompt = f"Entities identified: {list(entity_map.keys())}. \n"
-            triple_prompt += f"Relationships allowed: {[t.value for t in AssociationType]}. \n"
+            triple_prompt += f"Relationships allowed: {[t.value for t in RelationType]}. \n"
             triple_prompt += f"Extract triples from text: {text}. \n"
             triple_prompt += "Return JSON: {\"triples\": [{\"source\": \"name\", \"predicate\": \"TYPE\", \"target\": \"name\", \"confidence\": 0.9}]}"
             
@@ -504,10 +504,10 @@ class EnrichmentService:
                 return
 
             # Idempotency Safeguard: Purge old triples for this memory_id
-            db_manager.purge_associations(memory_id)
+            db_manager.purge_relations(memory_id)
 
             # Store Validated Triples
-            valid_predicates = {t.value for t in AssociationType}
+            valid_predicates = {t.value for t in RelationType}
             success_triples = 0
             for t in triple_data["triples"]:
                 src_name = t.get("source")
@@ -517,8 +517,8 @@ class EnrichmentService:
                 
                 if src_name in entity_map and tgt_name in entity_map and pred in valid_predicates:
                     cursor.execute("""
-                        INSERT INTO memory_associations (
-                            source_id, source_type, target_id, target_type, association_type, confidence_score, evidence_memory_id
+                        INSERT INTO memory_relations (
+                            source_id, source_type, target_id, target_type, relation_type, confidence_score, evidence_memory_id
                         ) VALUES (?, 'ENTITY', ?, 'ENTITY', ?, ?, ?)
                     """, (entity_map[src_name], entity_map[tgt_name], pred, conf, memory_id))
 

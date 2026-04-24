@@ -14,7 +14,7 @@ from reveriecore.enrichment import EnrichmentService
 from reveriecore.pruning import MesaService
 from reveriecore.retrieval import Retriever
 from reveriecore.provider import ReverieMemoryProvider
-from reveriecore.schemas import MemoryType, AssociationType
+from reveriecore.schemas import MemoryType, RelationType
 
 def test_tree_of_nuance(tmp_path):
     """
@@ -87,7 +87,7 @@ def test_tree_of_nuance(tmp_path):
             
             # Link to entity
             cursor.execute("""
-                INSERT INTO memory_associations (source_id, source_type, target_id, target_type, association_type)
+                INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type)
                 VALUES (?, 'MEMORY', ?, 'ENTITY', 'MENTIONS')
             """, (mid, ent_id))
 
@@ -108,7 +108,7 @@ def test_tree_of_nuance(tmp_path):
         assert len(metadata["source_ids"]) >= 5
         
         # 5. Verification: CHILD_OF Links
-        cursor.execute("SELECT source_id FROM memory_associations WHERE target_id = ? AND association_type = 'CHILD_OF'", (anchor_id,))
+        cursor.execute("SELECT source_id FROM memory_relations WHERE target_id = ? AND relation_type = 'CHILD_OF'", (anchor_id,))
         children = [row[0] for row in cursor.fetchall()]
         assert len(children) >= 5
 

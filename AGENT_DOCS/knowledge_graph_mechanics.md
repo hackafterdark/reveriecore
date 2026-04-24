@@ -45,7 +45,7 @@ Once nodes (entities) are resolved to IDs, the LLM is prompted to identify **Rel
 ### 3.2 Hub Protection (The "Noise" Filter)
 To prevent "Hub-Explosion" (where a popular entity like `README.md` drags in 500 irrelevant memories), the system enforces:
 - **Per-Node Limit**: Strictly follow only the **top 10 associations** per entity in the traversal.
-- **Priority Ranking**: Associations are sorted by `confidence` and `association_type` priority.
+- **Priority Ranking**: Associations are sorted by `confidence` and `relation_type` priority.
 
 ### 3.3 Idempotency & Cleanup
 - **Purge on Re-extract**: Re-running extraction for the same `memory_id` automatically purges old graph links before inserting new ones.

@@ -8,12 +8,10 @@ To ensure data sovereignty, portability, and "brain" disaster recovery, `Reverie
 *   **Source of Truth (Markdown + Frontmatter):** Used for archival, human-readability, and cross-platform portability. This allows for database-less graph traversal and complete reconstruction of the agent's memory.
 
 ## 3. Data Structure (The "Memory Passport")
-Every memory node is exported as an independent `.md` file with standardized YAML frontmatter (v1.1).
-
-### 3.1. Frontmatter Schema (v1.1)
+### 3.1. Frontmatter Schema (v1.0)
 ```yaml
 ---
-version: "1.1"
+version: "1.0"
 guid: "36790355-5589-444f-be5f-2f8a12e952b4"
 path: "year=2026/month=04/day=24/36790355-5589-444f-be5f-2f8a12e952b4.md"
 type: "RUNTIME_ERROR"
@@ -21,7 +19,7 @@ importance: 4.02081298828125
 status: "ACTIVE"
 owner: "default"
 learned_at: "2026-04-24T02:28:10Z"
-associations:
+relations:
   - name: "sqlite-vec"
     label: "LIBRARY"
     type: "MENTIONS"
@@ -48,11 +46,11 @@ Files are stored using Hive-style partitioning for scalability:
 ### 4.1. Export Logic
 - **Identity**: Uses globally unique `guid` for filenames and cross-reference instead of volatile integer IDs.
 - **Self-Describing**: The `path` field in frontmatter allows external tools to know exactly where the file lives in the Hive hierarchy.
-- **Entity Metadata**: Associations to entities include `name`, `label`, and `description` directly in the memory's frontmatter. This enables full graph restoration even if the `entities` table is lost.
+- **Entity Metadata**: Relations to entities include `name`, `label`, and `description` directly in the memory's frontmatter. This enables full graph restoration even if the `entities` table is lost.
 
 ### 4.2. Import & Disaster Recovery
 - **Pass 1: Node Restoration**: Reconstructs `memories` records. Matches existing nodes via `guid`.
-- **Pass 2: Graph Re-linking**: Re-establishes records in `memory_associations`. 
+- **Pass 2: Graph Re-linking**: Re-establishes records in `memory_relations`. 
 - **Auto-Restoration**: If an associated `ENTITY` is missing from the database, the system automatically recreates it using the metadata stored in the memory file.
 - **Re-Embedding**: Triggers background re-vectorization for imported memories to populate the `memories_vec` table.
 

@@ -23,9 +23,9 @@ class GraphQueryService:
                     SELECT 
                         CASE WHEN source_id = ? AND source_type = ? THEN target_id ELSE source_id END as next_id,
                         CASE WHEN source_id = ? AND source_type = ? THEN target_type ELSE source_type END as next_type
-                    FROM memory_associations
+                    FROM memory_relations
                     WHERE (source_id = ? AND source_type = ?) OR (target_id = ? AND target_type = ?)
-                    ORDER BY confidence DESC, rowid ASC
+                    ORDER BY confidence DESC, id ASC
                     LIMIT ?
                 """
                 cursor.execute(query, (node_id, node_type, node_id, node_type, node_id, node_type, node_id, node_type, per_node_limit))
@@ -43,7 +43,7 @@ def run_test():
     cursor = conn.cursor()
     cursor.execute("CREATE TABLE memories (id INTEGER PRIMARY KEY, content_full TEXT)")
     cursor.execute("CREATE TABLE entities (id INTEGER PRIMARY KEY, name TEXT, label TEXT)")
-    cursor.execute("CREATE TABLE memory_associations (source_id INTEGER, source_type TEXT, target_id INTEGER, target_type TEXT, association_type TEXT, confidence REAL)")
+    cursor.execute("CREATE TABLE memory_relations (id INTEGER PRIMARY KEY AUTOINCREMENT, source_id INTEGER, source_type TEXT, target_id INTEGER, target_type TEXT, relation_type TEXT, confidence REAL)")
     
     graph = GraphQueryService(conn)
     
@@ -51,8 +51,8 @@ def run_test():
     cursor.execute("INSERT INTO memories (id, content_full) VALUES (101, 'M1')")
     cursor.execute("INSERT INTO memories (id, content_full) VALUES (102, 'M2')")
     cursor.execute("INSERT INTO entities (id, name, label) VALUES (500, 'Shared', 'X')")
-    cursor.execute("INSERT INTO memory_associations VALUES (101, 'MEMORY', 500, 'ENTITY', 'M', 1.0)")
-    cursor.execute("INSERT INTO memory_associations VALUES (102, 'MEMORY', 500, 'ENTITY', 'M', 1.0)")
+    cursor.execute("INSERT INTO memory_relations VALUES (101, 'MEMORY', 500, 'ENTITY', 'M', 1.0)")
+    cursor.execute("INSERT INTO memory_relations VALUES (102, 'MEMORY', 500, 'ENTITY', 'M', 1.0)")
     
     results = graph.get_related_memories([101])
     print(f"Bridge result (M101 -> X <- M102): {results}")
@@ -61,11 +61,11 @@ def run_test():
     # 2. Hub Protection Test
     cursor.execute("INSERT INTO memories (id, content_full) VALUES (1, 'Seed')")
     cursor.execute("INSERT INTO entities (id, name) VALUES (1000, 'Hub')")
-    cursor.execute("INSERT INTO memory_associations VALUES (1, 'MEMORY', 1000, 'ENTITY', 'M', 1.0)")
+    cursor.execute("INSERT INTO memory_relations VALUES (1, 'MEMORY', 1000, 'ENTITY', 'M', 1.0)")
     for i in range(2, 22):
         cursor.execute(f"INSERT INTO memories (id, content_full) VALUES ({i}, 'L{i}')")
         # Link: Leaf -> Hub
-        cursor.execute(f"INSERT INTO memory_associations VALUES ({i}, 'MEMORY', 1000, 'ENTITY', 'M', {i/100.0})")
+        cursor.execute(f"INSERT INTO memory_relations VALUES ({i}, 'MEMORY', 1000, 'ENTITY', 'M', {i/100.0})")
     
     # Depth 2: Memory 1 -> Hub (1000) -> Leaves (2..21)
     # Testing per-node limit of 5. Hub should only return 5 leaves.

@@ -36,7 +36,7 @@ def check_graph_status():
             print(f" - [{label}] {name}")
 
     # 2. Check Associations
-    cursor.execute("SELECT count(*) FROM memory_associations")
+    cursor.execute("SELECT count(*) FROM memory_relations")
     assoc_count = cursor.fetchone()[0]
     print(f"\nTotal Associations (Triples): {assoc_count}")
     
@@ -44,8 +44,8 @@ def check_graph_status():
         print("\nTop 5 Associations:")
         # We join with entities to make it readable
         query = """
-            SELECT e1.name, ma.association_type, e2.name 
-            FROM memory_associations ma
+            SELECT e1.name, ma.relation_type, e2.name 
+            FROM memory_relations ma
             JOIN entities e1 ON ma.source_id = e1.id AND ma.source_type = 'ENTITY'
             JOIN entities e2 ON ma.target_id = e2.id AND ma.target_type = 'ENTITY'
             ORDER BY ma.id DESC LIMIT 5

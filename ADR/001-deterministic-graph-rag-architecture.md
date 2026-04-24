@@ -27,7 +27,7 @@ To ensure deterministic traversal, the system is restricted to the following ass
 
 ### 3. Implementation Patterns
 - **Entity Extraction**: Performed asynchronously by an `internal_llm_client` sidecar service, gated by `importance_score >= 3.0` to minimize latency.
-- **Storage**: Entities are stored in a dedicated `entities` table. Relationships are stored in a `memory_associations` edge-list table.
+- **Storage**: Entities are stored in a dedicated `entities` table. Relationships are stored in a `memory_relations` edge-list table.
 - **Traversal**: We utilize **Recursive Common Table Expressions (CTEs)** for graph traversal. This avoids external library dependencies and keeps the database portable.
 
 ## Consequences
@@ -48,7 +48,7 @@ WITH RECURSIVE graph_traversal(id, level) AS (
     SELECT [start_id], 0
     UNION ALL
     SELECT ma.target_id, gt.level + 1
-    FROM memory_associations ma
+    FROM memory_relations ma
     JOIN graph_traversal gt ON ma.source_id = gt.id
     WHERE gt.level < 3
 )

@@ -30,7 +30,7 @@ Using the `sqlite-vec` extension, we perform a nearest-neighbor search on the `m
 
 #### 3. Graph Augmentation (Graph-RAG)
 Similarity isn't everything. A memory that is semantically similar to your query might be linked to a vital "hidden" fact that doesn't share keywords. 
-- **Bidirectional Traversal**: After finding the top vector candidates (Seeds), we traverse the `memory_associations` table in **both directions** (`Memory <-> Entity <-> Entity <-> Memory`).
+- **Bidirectional Traversal**: After finding the top vector candidates (Seeds), we traverse the `memory_relations` table in **both directions** (`Memory <-> Entity <-> Entity <-> Memory`).
 - **Shared Entity Bridging**: This allows us to find Memory B if it shares an entity with Memory A, even if the query only semantically matched Memory A.
 - **Hub Protection**: To prevent popular entities (the "Hub Problem") from flooding results, we strictly limit traversal to the **top 10 associations per node**.
 

@@ -12,7 +12,7 @@ We will utilize a **Multiplicative Discovery Score** to ensure that graph traver
 ### The Formula
 `discovery_score = confidence_score * (1 + (is_anchor * gravity))`
 
-- **`confidence_score`**: The base truth (source: `memory_associations` table).
+- **`confidence_score`**: The base truth (source: `memory_relations` table).
 - **`is_anchor`**: Binary (0 or 1), indicating if the node directly matches a query entity.
 - **`gravity`**: A dynamic multiplier (0.5 to 1.1) derived from Cognitive Intent classification.
 

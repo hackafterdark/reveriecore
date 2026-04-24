@@ -130,13 +130,13 @@ def test_graph_integrity_across_mirror(test_env):
         
         # Association: A -> B (PRECEEDS)
         cursor.execute("""
-            INSERT INTO memory_associations (source_id, source_type, target_id, target_type, association_type)
+            INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type)
             VALUES (?, 'MEMORY', ?, 'MEMORY', 'PRECEEDS')
         """, (id_a, id_b))
         
         # Association: A -> E (MENTIONS)
         cursor.execute("""
-            INSERT INTO memory_associations (source_id, source_type, target_id, target_type, association_type)
+            INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type)
             VALUES (?, 'MEMORY', ?, 'ENTITY', 'MENTIONS')
         """, (id_a, id_e))
 
@@ -148,7 +148,7 @@ def test_graph_integrity_across_mirror(test_env):
     # 3. Wipe and Import
     with db.write_lock() as cursor:
         cursor.execute("DELETE FROM memories")
-        cursor.execute("DELETE FROM memory_associations")
+        cursor.execute("DELETE FROM memory_relations")
     
     mirror.import_archive()
     
@@ -161,16 +161,16 @@ def test_graph_integrity_across_mirror(test_env):
     assert restored_b is not None
     
     # Restore associations should have linked them
-    assocs = db.get_associations_for_node(restored_a['id'], 'MEMORY')
+    assocs = db.get_relations_for_node(restored_a['id'], 'MEMORY')
     assert len(assocs) >= 2
     
     # Check for PRECEEDS link to B
-    preceeds = [a for a in assocs if a['association_type'] == 'PRECEEDS']
+    preceeds = [a for a in assocs if a['relation_type'] == 'PRECEEDS']
     assert len(preceeds) == 1
     assert preceeds[0]['target_id'] == restored_b['id']
     
     # Check for MENTIONS link to E
-    mentions = [a for a in assocs if a['association_type'] == 'MENTIONS']
+    mentions = [a for a in assocs if a['relation_type'] == 'MENTIONS']
     assert len(mentions) == 1
     # We need to find Entity E's restored ID
     restored_e = db.get_entity_by_guid(guid_e)

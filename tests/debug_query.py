@@ -13,13 +13,13 @@ cursor = conn.cursor()
 # Schema
 cursor.execute("CREATE TABLE memories (id INTEGER PRIMARY KEY, content_full TEXT, status TEXT, last_accessed_at DATETIME, importance_score REAL)")
 cursor.execute("CREATE TABLE entities (id INTEGER PRIMARY KEY, name TEXT)")
-cursor.execute("CREATE TABLE memory_associations (source_id INTEGER, source_type TEXT, target_id INTEGER, target_type TEXT, association_type TEXT)")
+cursor.execute("CREATE TABLE memory_relations (source_id INTEGER, source_type TEXT, target_id INTEGER, target_type TEXT, relation_type TEXT)")
 
 # Data
 cursor.execute("INSERT INTO entities (id, name) VALUES (1, 'TestEntity')")
 for i in range(6):
     cursor.execute("INSERT INTO memories (id, content_full, status, last_accessed_at, importance_score) VALUES (?, ?, 'ACTIVE', datetime('now', '-20 days'), 2.5)", (i+1, f"text {i}"))
-    cursor.execute("INSERT INTO memory_associations (source_id, source_type, target_id, target_type, association_type) VALUES (?, 'MEMORY', 1, 'ENTITY', 'MENTIONS')", (i+1,))
+    cursor.execute("INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type) VALUES (?, 'MEMORY', 1, 'ENTITY', 'MENTIONS')", (i+1,))
 
 conn.commit()
 
@@ -30,7 +30,7 @@ consolidation_threshold = 5
 
 query = f"""
     SELECT e.id, e.name, COUNT(ma.source_id) as c_count, GROUP_CONCAT(ma.source_id) as member_ids
-    FROM memory_associations ma
+    FROM memory_relations ma
     JOIN entities e ON ma.target_id = e.id
     JOIN memories m ON ma.source_id = m.id
     WHERE ma.source_type = 'MEMORY' 

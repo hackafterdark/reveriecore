@@ -1,4 +1,4 @@
-The power of the `association_type` field is that it transforms simple data storage into a knowledge graph. It gives the agent not just *information*, but *contextual understanding*.
+The power of the `relation_type` field is that it transforms simple data storage into a knowledge graph. It gives the agent not just *information*, but *contextual understanding*.
 
 The four types we started with are great for basic workflow (sequencing and support). To make the system truly powerful, we need types that capture **causality, contradiction, and hierarchy**.
 
@@ -16,7 +16,7 @@ These values define the logical relationship between two memories, transforming 
 
 Understood. I have re-integrated the "What it Tells the Agent (Agent Behavior)" column. The goal is to provide a complete, two-way reference: **The type** and **the resulting intelligence**.
 
-Here is the definitive, final master table for the `association_type` field.
+Here is the definitive, final master table for the `relation_type` field.
 
 ---
 ### 🌐 Complete Association Types Master List (Final)

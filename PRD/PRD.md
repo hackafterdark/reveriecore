@@ -60,7 +60,7 @@ A robust model to track memory origin and ownership:
 ## 6. Data Schema
 - **`memories`**: Content, metadata, importance scores, and hierarchical signaling.
 - **`entities`**: Canonical identifiers for conceptually anchored world knowledge.
-- **`memory_associations`**: Polymorphic table mapping relationships (`CHILD_OF`, `SUPERSEDES`, `MENTIONS`).
+- **`memory_relations`**: Polymorphic table mapping relationships (`CHILD_OF`, `SUPERSEDES`, `MENTIONS`).
 - **`memories_vec`**: Optimized virtual table for KNN vector search.
 
 ## 7. Success Metrics

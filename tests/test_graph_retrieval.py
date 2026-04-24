@@ -34,12 +34,12 @@ def test_shared_entity_bridging():
     
     # 3. Create bidirectional associations
     # Memory 101 -> Entity 500
-    cursor.execute("INSERT INTO memory_associations (source_id, source_type, target_id, target_type, association_type) VALUES (101, 'MEMORY', 500, 'ENTITY', 'MENTIONS')")
+    cursor.execute("INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type) VALUES (101, 'MEMORY', 500, 'ENTITY', 'MENTIONS')")
     # Memory 102 -> Entity 500
-    cursor.execute("INSERT INTO memory_associations (source_id, source_type, target_id, target_type, association_type) VALUES (102, 'MEMORY', 500, 'ENTITY', 'MENTIONS')")
+    cursor.execute("INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type) VALUES (102, 'MEMORY', 500, 'ENTITY', 'MENTIONS')")
     
     db.commit()
-    cursor.execute("SELECT * FROM memory_associations")
+    cursor.execute("SELECT * FROM memory_relations")
     print(f"Associations in DB: {cursor.fetchall()}")
     
     # 4. Test Traversal from 101 to find 102
@@ -65,13 +65,13 @@ def test_hub_protection():
     # 2. Create hub entity
     cursor.execute("INSERT INTO entities (id, name, label) VALUES (100, 'The Hub', 'CONCEPT')")
     # 3. Link seed to hub
-    cursor.execute("INSERT INTO memory_associations (source_id, source_type, target_id, target_type, association_type) VALUES (1, 'MEMORY', 100, 'ENTITY', 'MENTIONS')")
+    cursor.execute("INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type) VALUES (1, 'MEMORY', 100, 'ENTITY', 'MENTIONS')")
     
     # 4. Create 20 other memories linked to the hub
     for i in range(2, 22):
         cursor.execute(f"INSERT INTO memories (id, content_full) VALUES ({i}, 'Leaf {i}')")
         # Bidirectional link: Leaf -> Hub
-        cursor.execute(f"INSERT INTO memory_associations (source_id, source_type, target_id, target_type, association_type, confidence_score) VALUES ({i}, 'MEMORY', 100, 'ENTITY', 'MENTIONS', {i/100.0})")
+        cursor.execute(f"INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type, confidence_score) VALUES ({i}, 'MEMORY', 100, 'ENTITY', 'MENTIONS', {i/100.0})")
         
     db.commit()
     

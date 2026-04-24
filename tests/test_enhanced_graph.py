@@ -9,7 +9,7 @@ from pathlib import Path
 
 from reveriecore.database import DatabaseManager
 from reveriecore.enrichment import EnrichmentService
-from reveriecore.schemas import AssociationType
+from reveriecore.schemas import RelationType
 
 def test_full_graph_pipeline(tmp_path):
     # 1. Setup Mock DB
@@ -48,11 +48,11 @@ def test_full_graph_pipeline(tmp_path):
         entities = cursor.fetchall()
         assert len(entities) == 2
         
-        cursor.execute("SELECT source_id, target_id, association_type FROM memory_associations WHERE association_type = 'MENTIONS'")
+        cursor.execute("SELECT source_id, target_id, relation_type FROM memory_relations WHERE relation_type = 'MENTIONS'")
         mentions = cursor.fetchall()
         assert len(mentions) == 2
         
-        cursor.execute("SELECT source_id, target_id, association_type FROM memory_associations WHERE association_type = 'DEFINED_IN'")
+        cursor.execute("SELECT source_id, target_id, relation_type FROM memory_relations WHERE relation_type = 'DEFINED_IN'")
         triples = cursor.fetchall()
         assert len(triples) == 1
         

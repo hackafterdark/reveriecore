@@ -62,11 +62,11 @@ class GraphQueryService:
                         CASE WHEN (CASE WHEN source_id = ? AND source_type = ? THEN target_id ELSE source_id END) IN ({placeholders}) 
                              AND (CASE WHEN source_id = ? AND source_type = ? THEN target_type ELSE source_type END) = 'ENTITY'
                              THEN 1 ELSE 0 END as is_anchor,
-                        rowid
-                    FROM memory_associations
+                        id
+                    FROM memory_relations
                     WHERE (source_id = ? AND source_type = ?) OR (target_id = ? AND target_type = ?)
                 """
-                neighbors_query = f"SELECT next_id, next_type, confidence_score, type_weight, (confidence_score * (1 + (is_anchor * ?))) as discovery_score, rowid FROM ({neighbors_query}) ORDER BY type_weight DESC, discovery_score DESC, rowid ASC LIMIT ?"
+                neighbors_query = f"SELECT next_id, next_type, confidence_score, type_weight, (confidence_score * (1 + (is_anchor * ?))) as discovery_score, id FROM ({neighbors_query}) ORDER BY type_weight DESC, discovery_score DESC, id ASC LIMIT ?"
                 
                 # Parameter ordering: 1 (gravity), then inner query params, then 1 (limit)
                 params = [gravity] 
@@ -113,13 +113,13 @@ class GraphQueryService:
         
         query = f"""
             SELECT DISTINCT source_id 
-            FROM memory_associations 
+            FROM memory_relations 
             WHERE source_type = 'MEMORY' 
             AND target_type = 'ENTITY'
             AND target_id IN (SELECT id FROM entities WHERE name IN ({placeholders}))
             UNION
             SELECT DISTINCT target_id
-            FROM memory_associations
+            FROM memory_relations
             WHERE target_type = 'MEMORY'
             AND source_type = 'ENTITY'
             AND source_id IN (SELECT id FROM entities WHERE name IN ({placeholders}))
@@ -131,8 +131,8 @@ class GraphQueryService:
         """Returns a string summary of entities linked to a memory for context injection."""
         cursor = self.db.get_cursor()
         query = """
-            SELECT e.name, e.label, ma.association_type 
-            FROM memory_associations ma
+            SELECT e.name, e.label, ma.relation_type 
+            FROM memory_relations ma
             JOIN entities e ON ma.target_id = e.id AND ma.target_type = 'ENTITY'
             WHERE ma.source_id = ? AND ma.source_type = 'MEMORY'
         """

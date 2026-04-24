@@ -10,7 +10,7 @@ def test_database_initialization(db_manager):
     tables = [row[0] for row in cursor.fetchall()]
     
     assert "memories" in tables
-    assert "memory_associations" in tables
+    assert "memory_relations" in tables
 
 def test_vector_extension_loaded(db_manager):
     """Verify that sqlite-vec extension is active."""

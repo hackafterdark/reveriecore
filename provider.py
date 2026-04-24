@@ -35,7 +35,7 @@ from tools.registry import tool_error
 from .database import DatabaseManager
 from .enrichment import EnrichmentService
 from .retrieval import Retriever
-from .schemas import MemoryType, AssociationType
+from .schemas import MemoryType, RelationType
 from .pruning import MesaService
 from .mirror import MirrorService
 

@@ -33,7 +33,7 @@ The solution will consist of a dedicated Hermes Memory Provider Plugin written i
 - [NEW] `memory_plugin/schema.py`
 - [NEW] `memory_plugin/types.py`
 **Step 1: Schema Definitions:** Create the `memories` relational table (content, actor, etc.) and the `memories_vec` virtual table.
-**Step 2: Type Enums:** Use Python `Enum` to define strict categories for `MemoryType` and `AssociationType`.
+**Step 2: Type Enums:** Use Python `Enum` to define strict categories for `MemoryType` and `RelationType`.
 **Step 3: Commit:** Commit schema and type definitions.
 
 ### Task 3: Memory Enrichment Engine (saveMemory)
@@ -46,7 +46,7 @@ The solution will consist of a dedicated Hermes Memory Provider Plugin written i
 **Step 4: Commit:** Commit enrichment logic.
 
 ### Task 4: Association & Knowledge Graph
-**Objective:** Link memories together using the `memory_associations` table.
+**Objective:** Link memories together using the `memory_relations` table.
 **Files:**
 - [NEW] `memory_plugin/association_manager.py`
 **Step 1: Link Logic:** Implement functions to create relationships (e.g., `CAUSES`, `SUPPORTS`) between memory IDs.

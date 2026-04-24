@@ -16,7 +16,7 @@ def provider(tmp_path, monkeypatch):
     cursor = p._db.get_cursor()
     cursor.execute("DELETE FROM memories")
     cursor.execute("DELETE FROM entities")
-    cursor.execute("DELETE FROM memory_associations")
+    cursor.execute("DELETE FROM memory_relations")
     p._db.commit()
     
     # Mock heavy enrichment bits

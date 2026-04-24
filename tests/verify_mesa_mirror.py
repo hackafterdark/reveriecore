@@ -96,7 +96,7 @@ def test_mesa_integration_mirrors_on_synthesis(tmp_path):
             cursor.execute("INSERT INTO memories (content_full, guid, status) VALUES (?, ?, 'ACTIVE')", (f"Child {i}", g))
             mid = cursor.lastrowid
             child_ids.append(mid)
-            cursor.execute("INSERT INTO memory_associations (source_id, target_id, target_type, association_type) VALUES (?, ?, 'ENTITY', 'MENTIONS')", (mid, ent_id))
+            cursor.execute("INSERT INTO memory_relations (source_id, target_id, target_type, relation_type) VALUES (?, ?, 'ENTITY', 'MENTIONS')", (mid, ent_id))
 
     # 2. Trigger Consolidation
     # We'll call the internal method for testing

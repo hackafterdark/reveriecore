@@ -12,7 +12,7 @@ class MemoryType(Enum):
     EXPIRED_TASK = "EXPIRED_TASK"
     ENTITY = "ENTITY"
 
-class AssociationType(Enum):
+class RelationType(Enum):
     """Categorical relationships between two memory nodes."""
     PRECEDES = "PRECEDES"
     SUPPORTS = "SUPPORTS"

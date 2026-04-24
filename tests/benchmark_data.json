@@ -17,7 +17,7 @@
   },
   {
     "question": "What is 'Bidirectional Traversal' in the context of the knowledge graph?",
-    "ground_truth": "After finding top vector candidates, the system traverses the memory_associations table in both directions (Memory <-> Entity and Entity <-> Entity) to bridge discoveries via shared entities."
+    "ground_truth": "After finding top vector candidates, the system traverses the memory_relations table in both directions (Memory <-> Entity and Entity <-> Entity) to bridge discoveries via shared entities."
   },
   {
     "question": "How does ReverieCore address the 'Hub Problem' in graph discovery?",
@@ -56,12 +56,12 @@
     "ground_truth": "Canonical entities are extracted using an LLM pass that identifies technical nouns (Files, Classes, Tools) and stores them in the entities table with deduplication."
   },
   {
-    "question": "What are the allowed relationship types (AssociationType) between entities?",
+    "question": "What are the allowed relationship types (RelationType) between entities?",
     "ground_truth": "Based on documentation, allowed relationship types include PART_OF, DEPENDS_ON, and MENTIONS."
   },
   {
     "question": "Name the four tables that make up the ReverieCore database schema.",
-    "ground_truth": "The four main tables are: memories, entities, memory_associations, and the virtual table memories_vec."
+    "ground_truth": "The four main tables are: memories, entities, memory_relations, and the virtual table memories_vec."
   },
   {
     "question": "What specifically is stored in the author_id, owner_id, and actor_id fields?",

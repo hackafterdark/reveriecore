@@ -73,7 +73,7 @@ def run_test():
         for i in range(4):
             cursor.execute("INSERT INTO memories (content_full, status, importance_score) VALUES (?, 'ACTIVE', 1.0)", (f"m {i}",))
             mid = cursor.lastrowid
-            cursor.execute("INSERT INTO memory_associations (source_id, source_type, target_id, target_type, association_type) VALUES (?, 'MEMORY', ?, 'ENTITY', 'MENTIONS')", (mid, ent_id))
+            cursor.execute("INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type) VALUES (?, 'MEMORY', ?, 'ENTITY', 'MENTIONS')", (mid, ent_id))
 
     logger.info("Running consolidation...")
     mesa.run_hierarchical_consolidation()

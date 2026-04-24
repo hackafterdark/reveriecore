@@ -82,7 +82,7 @@ TARGET_QUESTIONS = [
     },
     {
         "question": "What is 'Bidirectional Traversal' in the context of the knowledge graph?",
-        "ground_truth": "After finding top vector candidates, the system traverses the memory_associations table in both directions (Memory <-> Entity and Entity <-> Entity) to bridge discoveries via shared entities."
+        "ground_truth": "After finding top vector candidates, the system traverses the memory_relations table in both directions (Memory <-> Entity and Entity <-> Entity) to bridge discoveries via shared entities."
     }
 ]
 

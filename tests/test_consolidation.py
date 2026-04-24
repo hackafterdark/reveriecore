@@ -30,7 +30,7 @@ def test_consolidation(tmp_path):
     
     memories = [
         "database.py uses sqlite-vec for vector search.",
-        "database.py has a table called memory_associations for graph data.",
+        "database.py has a table called memory_relations for graph data.",
         "database.py implements migration logic for schema updates.",
         "database.py is located in the reveriecore directory."
     ]
@@ -46,7 +46,7 @@ def test_consolidation(tmp_path):
         import sqlite_vec
         cursor.execute("INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)", (mid, sqlite_vec.serialize_float32([0.1]*384)))
         # Link to entity
-        cursor.execute("INSERT INTO memory_associations (source_id, source_type, target_id, target_type, association_type) VALUES (?, 'MEMORY', ?, 'ENTITY', 'MENTIONS')", (mid, ent_id))
+        cursor.execute("INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type) VALUES (?, 'MEMORY', ?, 'ENTITY', 'MENTIONS')", (mid, ent_id))
 
     db.commit()
     print(f"Created {len(mem_ids)} memories for {entity_name}")
@@ -70,7 +70,7 @@ def test_consolidation(tmp_path):
     assert len(archived) == 4, "Should have archived the 4 originals"
     
     # 4. Check SUPERSEDES links
-    cursor.execute("SELECT association_type FROM memory_associations WHERE association_type = 'SUPERSEDES'")
+    cursor.execute("SELECT relation_type FROM memory_relations WHERE relation_type = 'SUPERSEDES'")
     links = cursor.fetchall()
     print(f"Supersedes links created: {len(links)}")
     assert len(links) == 4
