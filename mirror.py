@@ -135,13 +135,24 @@ class MirrorService:
                 "status": memory.get("status"),
                 "owner": memory.get("owner_id"),
                 "learned_at": dt.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                "abstract": memory.get("content_abstract"),
                 "relations": [],
                 "metadata": json.loads(memory.get("metadata") or "{}")
             }
 
-            # 3. Add Relations with paths
-            rel_rows = self.db.get_relations_for_node(memory_id, "MEMORY")
-            for a in rel_rows:
+            # 3. Add Relations (both direct and evidenced)
+            rel_rows_direct = self.db.get_relations_for_node(memory_id, "MEMORY")
+            rel_rows_evidenced = self.db.get_relations_by_evidence(memory_id)
+            
+            # Combine and deduplicate by ID
+            seen_rel_ids = set()
+            all_rels = []
+            for r in rel_rows_direct + rel_rows_evidenced:
+                if r["id"] not in seen_rel_ids:
+                    all_rels.append(r)
+                    seen_rel_ids.add(r["id"])
+
+            for a in all_rels:
                 other_guid = None
                 other_node_type = None
                 other_name = None
@@ -166,13 +177,13 @@ class MirrorService:
                             other_label = t.get("label")
                             other_description = t.get("description")
                 else:
-                    # We are the target, other is source
-                    role = "source"
+                    # We are the evidence but not source or target (Triple E1 -> E2)
+                    # We'll export the relation from the perspective of the source
+                    role = "evidence"
                     other_node_type = a["source_type"]
                     if other_node_type == "MEMORY":
                         s = self.db.get_memory(a["source_id"])
-                        if s:
-                            other_guid = s["guid"]
+                        if s: other_guid = s["guid"]
                     else:
                         s = self.db.get_entity(a["source_id"])
                         if s:
@@ -180,6 +191,11 @@ class MirrorService:
                             other_name = s.get("name")
                             other_label = s.get("label")
                             other_description = s.get("description")
+                
+                # If we were target, we also want the source's info
+                # But actually, the user format is 1 relation item per "other" node.
+                # For triples, we should probably add the target info to the metadata or something?
+                # For now, let's just make sure MENTIONS are handled which are 1-to-1.
                 
                 if other_guid:
                     # Construct with specific key order
@@ -198,6 +214,8 @@ class MirrorService:
                         assoc_entry["description"] = other_description
                         
                     frontmatter["relations"].append(assoc_entry)
+                else:
+                    logger.warning(f"Skipping relation {a['id']} for memory {memory_id}: could not resolve other GUID (Type: {other_node_type}, ID: {a['source_id'] if role=='source' else a['target_id']})")
 
             # 4. Write File
             dt_path = self.archive_root / Path(rel_path).parent
@@ -211,8 +229,6 @@ class MirrorService:
                 f.write("---\n")
                 f.write(yaml_block)
                 f.write("---\n\n")
-                if memory.get("content_abstract"):
-                    f.write(f"> {memory.get('content_abstract')}\n\n")
                 f.write(content)
             
             logger.info(f"Exported memory {memory_id} to {file_path}")
@@ -345,9 +361,12 @@ class MirrorService:
             yaml_content = parts[1]
             body = "---".join(parts[2:]).strip()
             
-            # Extract Abstract from body if present (formatted as blockquote)
-            abstract = None
-            if body.startswith("> "):
+            # Use the improved _load_yaml
+            frontmatter = self._load_yaml(yaml_content.split("\n"))
+            
+            # Extract Abstract: prioritize frontmatter, fallback to blockquote for legacy support
+            abstract = frontmatter.get("abstract")
+            if not abstract and body.startswith("> "):
                 body_parts = body.split("\n\n", 1)
                 if len(body_parts) > 1:
                     abstract = body_parts[0][2:].strip()
@@ -356,9 +375,6 @@ class MirrorService:
                     # Body is ONLY abstract?
                     abstract = body[2:].strip()
                     body = ""
-
-            # Use the improved _load_yaml
-            frontmatter = self._load_yaml(yaml_content.split("\n"))
             
             guid = frontmatter.get("guid")
             if not guid:
@@ -427,15 +443,18 @@ class MirrorService:
                     if isinstance(item, dict):
                         first = True
                         for ik, iv in item.items():
-                            val = json.dumps(iv) if isinstance(iv, (dict, list)) else iv
+                            val = json.dumps(iv) if isinstance(iv, (dict, list, str)) else iv
                             if first:
                                 lines.append(f"  - {ik}: {val}")
                                 first = False
                             else:
                                 lines.append(f"    {ik}: {val}")
                     else:
-                        lines.append(f"  - {v}")
+                        lines.append(f"  - {item}")
             elif isinstance(v, dict):
+                lines.append(f"{k}: {json.dumps(v)}")
+            elif isinstance(v, str):
+                # Ensure strings are properly escaped/quoted for YAML
                 lines.append(f"{k}: {json.dumps(v)}")
             else:
                 lines.append(f"{k}: {v}")

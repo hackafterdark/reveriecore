@@ -334,12 +334,15 @@ class ReverieMemoryProvider(MemoryProvider):
                     VALUES (?, ?)
                 """, (mem_id, sqlite_vec.serialize_float32(vec)))
                 
-            # 5. Graph Extraction (Triggered if high importance)
-            if importance >= 3.0:
-                logger.info(f"Triggering enhanced graph extraction for memory {mem_id}")
-                self._enrichment.extract_graph_data(full_text, mem_id, self._db)
+            # 5. Graph Extraction (Extract for all memories to ensure archive completeness)
+            logger.info(f"Triggering enhanced graph extraction for memory {mem_id}")
+            self._enrichment.extract_graph_data(full_text, mem_id, self._db)
 
-            logger.debug(f"Memory saved: ID {mem_id}, Type {mem_type.value}, Score {importance}")
+            # 6. Mirror-as-Code: Export to Markdown archive immediately
+            if self._mirror_service:
+                self._mirror_service.export_node(mem_id)
+
+            logger.debug(f"Memory saved and exported: ID {mem_id}, Type {mem_type.value}, Score {importance}")
             
         except Exception as e:
             logger.warning(f"ReverieCore sync failed: {e}")

@@ -455,6 +455,9 @@ class EnrichmentService:
                 self.telemetry["failure"] += 1
                 return
 
+            # Idempotency Safeguard: Purge old triples for this memory_id
+            db_manager.purge_relations(memory_id)
+
             # Canonicalize & Store Entities
             entity_map = {} # name -> id
             cursor = db_manager.get_cursor()
@@ -465,26 +468,30 @@ class EnrichmentService:
                 label = ent.get("type", "UNKNOWN").upper()
                 desc = ent.get("description", "")
                 
-                # Idempotent Insert (UPSERT pattern)
+                # Idempotent Insert (UPSERT pattern) with GUID generation
+                new_guid = str(uuid.uuid4())
                 cursor.execute("""
-                    INSERT INTO entities (name, label, description) 
-                    VALUES (?, ?, ?)
+                    INSERT INTO entities (name, label, description, guid) 
+                    VALUES (?, ?, ?, ?)
                     ON CONFLICT(name) DO UPDATE SET 
                         label=excluded.label, 
-                        description=COALESCE(excluded.description, description)
-                """, (name, label, desc))
+                        description=COALESCE(excluded.description, description),
+                        guid=COALESCE(entities.guid, excluded.guid)
+                """, (name, label, desc, new_guid))
                 
                 cursor.execute("SELECT id FROM entities WHERE name = ?", (name,))
                 entity_map[name] = cursor.fetchone()[0]
                 
                 # Restore MENTIONS link (Memory -> Entity)
                 cursor.execute("""
-                    INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type)
-                    VALUES (?, 'MEMORY', ?, 'ENTITY', 'MENTIONS')
-                """, (memory_id, entity_map[name]))
+                    INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type, evidence_memory_id)
+                    VALUES (?, 'MEMORY', ?, 'ENTITY', 'MENTIONS', ?)
+                """, (memory_id, entity_map[name], memory_id))
 
 
 
+
+            db_manager.commit()
 
             # Pass 2: Extract Triples using Entity names
             # We ask for triples between identified entities
@@ -503,8 +510,6 @@ class EnrichmentService:
                 self.telemetry["success"] += 1 # Partial success (entities saved)
                 return
 
-            # Idempotency Safeguard: Purge old triples for this memory_id
-            db_manager.purge_relations(memory_id)
 
             # Store Validated Triples
             valid_predicates = {t.value for t in RelationType}

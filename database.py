@@ -317,6 +317,28 @@ class DatabaseManager:
             })
         return results
 
+    def get_relations_by_evidence(self, memory_id: int) -> List[Dict]:
+        """Fetches all relations where this memory provided the evidence (triples)."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT id, source_id, source_type, target_id, target_type, relation_type, confidence_score, metadata
+            FROM memory_relations
+            WHERE evidence_memory_id = ?
+        """, (memory_id,))
+        results = []
+        for row in cursor.fetchall():
+            results.append({
+                "id": row[0],
+                "source_id": row[1],
+                "source_type": row[2],
+                "target_id": row[3],
+                "target_type": row[4],
+                "relation_type": row[5],
+                "confidence_score": row[6],
+                "metadata": row[7]
+            })
+        return results
+
     def get_or_create_entity(self, name: str, label: str, description: str = None) -> int:
         """Finds or creates an entity by canonical name with stable GUID."""
         cursor = self.conn.cursor()

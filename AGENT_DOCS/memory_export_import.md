@@ -19,6 +19,7 @@ importance: 4.02081298828125
 status: "ACTIVE"
 owner: "default"
 learned_at: "2026-04-24T02:28:10Z"
+abstract: "Short semantic summary of the memory content."
 relations:
   - name: "sqlite-vec"
     label: "LIBRARY"
