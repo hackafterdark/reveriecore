@@ -80,9 +80,9 @@ class Retriever:
                limit: int = 5, 
                token_budget: int = 1000,
                strategy: str = "balanced",
-               similarity_weight: float = 0.5, 
-               importance_weight: float = 0.3,
-               decay_weight: float = 0.2,
+               similarity_weight: Optional[float] = None, 
+               importance_weight: Optional[float] = None,
+               decay_weight: Optional[float] = None,
                allowed_owners: List[str] = None,
                include_archived: bool = False) -> List[Dict[str, Any]]:
         """
@@ -95,6 +95,30 @@ class Retriever:
         cursor = self.db.get_cursor()
         candidates = []
         seen_ids = set()
+        
+        # 0. Dynamic Weighting & Intent Detection
+        # Defaults if not provided (allowing manual overrides)
+        sw = similarity_weight
+        iw = importance_weight
+        dw = decay_weight
+        intent = "Exploration"
+        
+        if sw is None or iw is None or dw is None:
+            query_lower = query_text.lower()
+            fact_markers = ["what is", "how ", "who ", "where ", "when ", "why ", "list ", "explain ", "identify"]
+            if any(m in query_lower for m in fact_markers):
+                intent = "Fact-Seeking"
+                sw = sw if sw is not None else 0.7
+                iw = iw if iw is not None else 0.1
+                dw = dw if dw is not None else 0.2
+            else:
+                sw = sw if sw is not None else 0.4
+                iw = iw if iw is not None else 0.4
+                dw = dw if dw is not None else 0.2
+        else:
+            intent = "Manual Override"
+
+        logger.info(f"Retrieval Intent: {intent} (sim_w={sw}, imp_w={iw}, dec_w={dw})")
         
         status_filter = "('ACTIVE')" if not include_archived else "('ACTIVE', 'ARCHIVED')"
         
@@ -119,7 +143,7 @@ class Retriever:
                     decay = self._calculate_decay(lat, imp, exp)
                     
                     # Graph anchors get a boost
-                    score = (0.6 * similarity_weight) + (min(imp / 10.0, 1.0) * importance_weight) + (decay * decay_weight) + 0.2
+                    score = (0.6 * sw) + (min(imp / 10.0, 1.0) * iw) + (decay * dw) + 0.2
                     
                     candidates.append({
                         "id": m_id, "content_full": c_f, "content_abstract": c_a,
@@ -155,9 +179,15 @@ class Retriever:
                     if m_id in seen_ids: continue
                     
                     similarity = 1.0 / (1.0 + dist)
+                    
+                    # --- THE PRECISION GATE ---
+                    # Filter out noise before it enters the candidate pool
+                    if similarity < 0.45:
+                        continue
+                        
                     decay = 1.0 if is_fresh else self._calculate_decay(lat, imp, exp)
                     
-                    final_score = (similarity * similarity_weight) + (min(imp / 10.0, 1.0) * importance_weight) + (decay * decay_weight)
+                    final_score = (similarity * sw) + (min(imp / 10.0, 1.0) * iw) + (decay * dw)
                     
                     candidates.append({
                         "id": m_id, "content_full": c_f, "content_abstract": c_a,
@@ -207,7 +237,7 @@ class Retriever:
                         
                         # Graph boost incorporates the discovery score from graph traversal
                         discovery_boost = linked_results.get(m_id, 0.5) # Default to 0.5 if missing
-                        score = (0.4 * similarity_weight) + (min(imp / 10.0, 1.0) * importance_weight) + (discovery_boost * 0.1) + (decay * decay_weight)
+                        score = (0.4 * sw) + (min(imp / 10.0, 1.0) * iw) + (discovery_boost * 0.1) + (decay * dw)
                         
                         candidates.append({
                             "id": m_id, "content_full": c_f, "content_abstract": c_a,
