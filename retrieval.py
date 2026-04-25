@@ -2,11 +2,311 @@ import math
 import json
 from datetime import datetime
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
+from abc import ABC, abstractmethod
 from .database import DatabaseManager
 from .graph_query import GraphQueryService
 
+
 logger = logging.getLogger(__name__)
+
+class RetrievalContext:
+    """Mutable state container for the retrieval pipeline."""
+    def __init__(self, query_text: str, query_vector: List[float], limit: int, token_budget: int, config: Dict[str, Any] = None):
+        self.query_text = query_text
+        self.query_vector = query_vector
+        self.limit = limit
+        self.token_budget = token_budget
+        self.config = config or {}
+        
+        self.candidates: Dict[int, Dict[str, Any]] = {} # id -> memory_dict
+        self.metrics: Dict[str, Any] = {} # telemetry
+        self.weights: Dict[str, float] = {"similarity": 0.5, "importance": 0.3, "decay": 0.2}
+        self.intent: str = "Exploration"
+        self.consumed_tokens: int = 0
+        self.results: List[Dict[str, Any]] = []
+        self.is_fresh: bool = False
+        self.anchors: List[str] = []
+
+    @property
+    def remaining_budget(self) -> int:
+        return self.token_budget - self.consumed_tokens
+
+class RetrievalHandler(ABC):
+    """Abstract base class for all retrieval pipeline handlers."""
+    @abstractmethod
+    def process(self, context: RetrievalContext, retriever: 'Retriever') -> None:
+        pass
+
+class AnchoringDiscovery(RetrievalHandler):
+    """Stage A: Semantic Anchoring (Graph-First)"""
+    def process(self, context: RetrievalContext, retriever: 'Retriever') -> None:
+        # Detect if 'clean slate' requested
+        keywords = ["clean slate", "new idea", "fresh start", "forget history", "new project"]
+        context.is_fresh = any(k in context.query_text.lower() for k in keywords)
+        
+        if context.is_fresh:
+            return
+
+        if retriever.enrichment:
+            context.anchors = retriever.enrichment.extract_query_anchors(context.query_text)
+            
+        if not context.anchors:
+            return
+
+        cursor = retriever.db.get_cursor()
+        graph_anchored_ids = retriever.graph.get_memories_by_entities(context.anchors)
+        
+        include_archived = context.config.get("include_archived", False)
+        status_filter = "('ACTIVE')" if not include_archived else "('ACTIVE', 'ARCHIVED')"
+        
+        if graph_anchored_ids:
+            id_placeholders = ",".join(["?"] * len(graph_anchored_ids))
+            query = f"SELECT id, content_full, content_abstract, token_count_full, token_count_abstract, importance_score, learned_at, expires_at, memory_type, metadata, guid FROM memories WHERE id IN ({id_placeholders}) AND status IN {status_filter}"
+            cursor.execute(query, tuple(graph_anchored_ids))
+            
+            for row in cursor.fetchall():
+                m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp, m_type, meta, guid = row
+                context.candidates[m_id] = {
+                    "id": m_id, "content_full": c_f, "content_abstract": c_a,
+                    "tc_full": tc_f or (len(c_f) // 4), "tc_abstract": tc_a or (len(c_a or "") // 4),
+                    "importance": imp, "learned_at": lat, "expires_at": exp,
+                    "source": "anchor", "type": m_type, "metadata": meta, "guid": guid
+                }
+        
+        context.metrics["anchoring"] = {"found": len(graph_anchored_ids) if graph_anchored_ids else 0}
+
+class VectorDiscovery(RetrievalHandler):
+    """Stage B: Vector Fallback (Broad Search)"""
+    def process(self, context: RetrievalContext, retriever: 'Retriever') -> None:
+        # Triggered if freshness is requested OR we have fewer than 3 graph results
+        if not context.is_fresh and len(context.candidates) >= 3:
+            return
+
+        cursor = retriever.db.get_cursor()
+        candidate_limit = context.limit * 3
+        
+        allowed_owners = context.config.get("allowed_owners")
+        include_archived = context.config.get("include_archived", False)
+        status_filter = "('ACTIVE')" if not include_archived else "('ACTIVE', 'ARCHIVED')"
+        
+        try:
+            import sqlite_vec
+            filter_clause = ""
+            v_params = [sqlite_vec.serialize_float32(context.query_vector), candidate_limit]
+            
+            if allowed_owners:
+                placeholders = ",".join(["?"] * len(allowed_owners))
+                filter_clause = f"AND (m.owner_id IN ({placeholders}) OR m.privacy = 'PUBLIC')"
+                v_params.extend(allowed_owners)
+            
+            v_query = f"""
+                SELECT m.id, m.content_full, m.content_abstract, m.token_count_full, m.token_count_abstract, m.importance_score, m.learned_at, m.expires_at, v.distance, m.memory_type, m.metadata, m.guid
+                FROM memories_vec v JOIN memories m ON v.rowid = m.id
+                WHERE v.embedding MATCH ? AND v.k = ? AND m.status IN {status_filter} {filter_clause}
+                ORDER BY v.distance ASC
+            """
+            cursor.execute(v_query, v_params)
+            
+            count = 0
+            for row in cursor.fetchall():
+                m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp, dist, m_type, meta, guid = row
+                similarity = 1.0 / (1.0 + dist)
+                
+                # Precision Gate
+                if similarity < 0.45:
+                    continue
+                    
+                if m_id not in context.candidates:
+                    context.candidates[m_id] = {
+                        "id": m_id, "content_full": c_f, "content_abstract": c_a,
+                        "tc_full": tc_f or (len(c_f) // 4), "tc_abstract": tc_a or (len(c_a or "") // 4),
+                        "importance": imp, "learned_at": lat, "expires_at": exp,
+                        "similarity": similarity, "source": "vector",
+                        "type": m_type, "metadata": meta, "guid": guid
+                    }
+                    count += 1
+            
+            context.metrics["vector"] = {"found": count}
+        except Exception as e:
+            logger.error(f"Vector discovery failed: {e}")
+
+class GraphExpansionDiscovery(RetrievalHandler):
+    """Stage C: Graph Augmentation (Connections from top results)"""
+    def process(self, context: RetrievalContext, retriever: 'Retriever') -> None:
+        if context.is_fresh or not context.candidates:
+            return
+
+        # Sort current candidates by temporary score (or importance if scores not set yet)
+        # For expansion, we look at the top 3 results currently in the pool
+        seed_ids = [cid for cid, c in sorted(context.candidates.items(), key=lambda x: x[1].get("similarity", x[1]["importance"]/10.0), reverse=True)[:3]]
+        
+        if not seed_ids:
+            return
+
+        # Calculate dynamic gravity
+        gravity = retriever._calculate_gravity(context.query_text, list(context.candidates.values())[:5])
+        
+        # Iterative expansion
+        linked_results = retriever.graph.get_related_memories(seed_ids, anchor_entities=context.anchors, gravity=gravity, depth=1)
+        depth = 1
+        
+        count = len(linked_results)
+        avg_signal = sum(linked_results.values()) / count if count > 0 else 0.0
+        
+        if count < 3 or avg_signal < 0.6:
+            linked_results = retriever.graph.get_related_memories(seed_ids, anchor_entities=context.anchors, gravity=gravity, depth=2)
+            depth = 2
+            avg_signal = sum(linked_results.values()) / len(linked_results) if linked_results else 0.0
+
+        cursor = retriever.db.get_cursor()
+        new_ids = [i for i in linked_results.keys() if i not in context.candidates]
+        
+        include_archived = context.config.get("include_archived", False)
+        status_filter = "('ACTIVE')" if not include_archived else "('ACTIVE', 'ARCHIVED')"
+        
+        if new_ids:
+            id_placeholders = ",".join(["?"] * len(new_ids))
+            fetch_query = f"SELECT id, content_full, content_abstract, token_count_full, token_count_abstract, importance_score, learned_at, expires_at, memory_type, metadata, guid FROM memories WHERE id IN ({id_placeholders}) AND status IN {status_filter}"
+            cursor.execute(fetch_query, tuple(new_ids))
+            
+            for row in cursor.fetchall():
+                m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp, m_type, meta, guid = row
+                context.candidates[m_id] = {
+                    "id": m_id, "content_full": c_f, "content_abstract": c_a,
+                    "tc_full": tc_f or (len(c_f) // 4), "tc_abstract": tc_a or (len(c_a or "") // 4),
+                    "importance": imp, "learned_at": lat, "expires_at": exp,
+                    "discovery_boost": linked_results.get(m_id, 0.5),
+                    "source": "graph", "type": m_type, "metadata": meta, "guid": guid
+                }
+                
+        context.metrics["graph_expansion"] = {"depth": depth, "found": len(new_ids), "signal": avg_signal}
+
+class IntentRanker(RetrievalHandler):
+    """Detects intent and sets weights."""
+    def process(self, context: RetrievalContext, retriever: 'Retriever') -> None:
+        query_lower = context.query_text.lower()
+        fact_markers = ["what is", "how ", "who ", "where ", "when ", "why ", "list ", "explain ", "identify"]
+        
+        # Check if weights were manually overridden in config
+        manual_sw = context.config.get("similarity_weight")
+        manual_iw = context.config.get("importance_weight")
+        manual_dw = context.config.get("decay_weight")
+        
+        if manual_sw is not None and manual_iw is not None and manual_dw is not None:
+            context.intent = "Manual Override"
+            context.weights = {"similarity": manual_sw, "importance": manual_iw, "decay": manual_dw}
+        elif any(m in query_lower for m in fact_markers):
+            context.intent = "Fact-Seeking"
+            context.weights = {"similarity": 0.7, "importance": 0.1, "decay": 0.2}
+        else:
+            context.intent = "Exploration"
+            context.weights = {"similarity": 0.4, "importance": 0.4, "decay": 0.2}
+            
+        context.metrics["intent"] = context.intent
+
+class ScoringRanker(RetrievalHandler):
+    """Calculates final combined score for all candidates."""
+    def process(self, context: RetrievalContext, retriever: 'Retriever') -> None:
+        sw = context.weights["similarity"]
+        iw = context.weights["importance"]
+        dw = context.weights["decay"]
+        
+        for cid, c in context.candidates.items():
+            # 1. Similarity (from vector search or default for graph/anchor)
+            sim = c.get("similarity", 0.6 if c["source"] == "anchor" else 0.4)
+            
+            # 2. Decay
+            decay = 1.0 if context.is_fresh else retriever._calculate_decay(c["learned_at"], c["importance"], c["expires_at"])
+            
+            # 3. Importance (normalized 0-1)
+            imp = min(c["importance"] / 10.0, 1.0)
+            
+            # 4. Boosts
+            boost = 0.0
+            if c["source"] == "anchor": boost = 0.2
+            elif c["source"] == "graph": boost = c.get("discovery_boost", 0.5) * 0.1
+            
+            # Final Score
+            c["score"] = (sim * sw) + (imp * iw) + (decay * dw) + boost
+
+class BudgetHandler(RetrievalHandler):
+    """Selects results and formats output strings."""
+    def process(self, context: RetrievalContext, retriever: 'Retriever') -> None:
+        # Sort candidates by score
+        sorted_candidates = sorted(context.candidates.values(), key=lambda x: x["score"], reverse=True)
+        
+        strategy = context.config.get("strategy", "balanced")
+        
+        for c in sorted_candidates:
+            if len(context.results) >= context.limit:
+                break
+                
+            chosen_content = None
+            chosen_tokens = 0
+            version = "full"
+            
+            if strategy == "abstract_only" and c["content_abstract"]:
+                chosen_content = c["content_abstract"]; chosen_tokens = c["tc_abstract"]; version = "abstract"
+            else:
+                if context.consumed_tokens + c["tc_full"] <= context.token_budget:
+                    chosen_content = c["content_full"]; chosen_tokens = c["tc_full"]; version = "full"
+                elif c["content_abstract"] and context.consumed_tokens + c["tc_abstract"] <= context.token_budget:
+                    chosen_content = c["content_abstract"]; chosen_tokens = c["tc_abstract"]; version = "abstract"
+            
+            if chosen_content:
+                # Map Metadata
+                label = "Incidental"
+                if c["importance"] >= 8.0: label = "Critical"
+                elif c["importance"] >= 4.0: label = "Relevant"
+                
+                date_str = "Unknown"
+                if c["learned_at"]:
+                    date_str = c["learned_at"].split("T")[0] if "T" in c["learned_at"] else c["learned_at"].split(" ")[0]
+                
+                location = "N/A"
+                if c.get("metadata"):
+                    try:
+                        meta_dict = json.loads(c["metadata"]) if isinstance(c["metadata"], str) else c["metadata"]
+                        location = meta_dict.get("location") or meta_dict.get("geolocation") or "N/A"
+                    except: pass
+
+                # Build Header
+                guid = c.get("guid") or f"mem_{c['id']}"
+                header = (
+                    f"### MEMORY ID: {guid}\n"
+                    f"- Timestamp: {date_str}\n"
+                    f"- Category: {c['type']}\n"
+                    f"- Importance: {label}\n"
+                    f"- Location: {location}\n"
+                    f"- Context:\n"
+                )
+                
+                indented_content = "  " + chosen_content.replace("\n", "\n  ")
+                display_content = header + indented_content
+
+                if c["type"] == "OBSERVATION" or c["source"] in ["graph", "anchor"]:
+                    neighbors_summary = retriever.graph.get_neighbors_summary(c["id"])
+                    if neighbors_summary:
+                        display_content += f"\n  {neighbors_summary.strip()}"
+                    
+                # Hierarchical Discovery
+                if c["type"] == "OBSERVATION" and c.get("metadata"):
+                    try:
+                        meta = json.loads(c["metadata"]) if isinstance(c["metadata"], str) else c["metadata"]
+                        child_ids = meta.get("source_ids", [])
+                        if child_ids:
+                            display_content += f"\n  [Nuanced Details available via recall_reverie for IDs: {child_ids}]"
+                    except: pass
+
+                context.results.append({
+                    "id": c["id"], 
+                    "content": display_content, 
+                    "tokens": chosen_tokens, 
+                    "version": version, 
+                    "score": c["score"]
+                })
+                context.consumed_tokens += chosen_tokens
 
 class Retriever:
     """RAG Engine: Handles vector search, importance-based ranking, and graph traversal."""
@@ -15,6 +315,44 @@ class Retriever:
         self.db = db
         self.graph = GraphQueryService(db)
         self.enrichment = enrichment
+        
+        # Default Pipelines
+        self.discovery_pipeline: List[RetrievalHandler] = []
+        self.ranking_pipeline: List[RetrievalHandler] = []
+        self.budget_pipeline: List[RetrievalHandler] = []
+        
+        self._setup_default_pipelines()
+
+    def _setup_default_pipelines(self):
+        """Initializes the standard ReverieCore retrieval flow."""
+        # 1. Discovery
+        self.discovery_pipeline = [
+            AnchoringDiscovery(),
+            VectorDiscovery()
+        ]
+        
+        # 2. Ranking & Expansion (Serial because expansion depends on discovery results)
+        self.ranking_pipeline = [
+            IntentRanker(),
+            GraphExpansionDiscovery(), # Technically discovery, but happens after initial set
+            ScoringRanker()
+        ]
+        
+        # 3. Budgeting & Selection
+        self.budget_pipeline = [
+            BudgetHandler()
+        ]
+
+    def register_handler(self, handler: RetrievalHandler, stage: str = "discovery"):
+        """Allows external plugins to inject logic into the pipeline."""
+        if stage == "discovery":
+            self.discovery_pipeline.append(handler)
+        elif stage == "ranking":
+            self.ranking_pipeline.append(handler)
+        elif stage == "budget":
+            self.budget_pipeline.append(handler)
+        else:
+            logger.warning(f"Unknown pipeline stage: {stage}")
 
     def _calculate_decay(self, learned_at_str: str, importance: float, expires_at: Optional[str] = None) -> float:
         """
@@ -86,244 +424,42 @@ class Retriever:
                allowed_owners: List[str] = None,
                include_archived: bool = False) -> List[Dict[str, Any]]:
         """
-        Advanced Anchor-Aware Search:
-        1. Freshness Check: Bypass graph if 'clean slate' requested.
-        2. Semantic Anchoring: Graph-first discovery from query entities.
-        3. Broad Fallback: Trigger vector search if graph results < 3.
-        4. Re-ranking: Similarity + Importance + Temporal Decay.
+        Composable Pipeline Orchestrator:
+        1. Initialize RetrievalContext.
+        2. Run Discovery Handlers (Parallel-ready, currently serial).
+        3. Run Ranking & Expansion Handlers (Serial).
+        4. Run Budgeting & Selection Handlers (Serial).
         """
-        cursor = self.db.get_cursor()
-        candidates = []
-        seen_ids = set()
+        # 1. Initialize Context
+        config = {
+            "strategy": strategy,
+            "similarity_weight": similarity_weight,
+            "importance_weight": importance_weight,
+            "decay_weight": decay_weight,
+            "allowed_owners": allowed_owners,
+            "include_archived": include_archived
+        }
+        context = RetrievalContext(query_text, query_vector, limit, token_budget, config)
         
-        # 0. Dynamic Weighting & Intent Detection
-        # Defaults if not provided (allowing manual overrides)
-        sw = similarity_weight
-        iw = importance_weight
-        dw = decay_weight
-        intent = "Exploration"
-        
-        if sw is None or iw is None or dw is None:
-            query_lower = query_text.lower()
-            fact_markers = ["what is", "how ", "who ", "where ", "when ", "why ", "list ", "explain ", "identify"]
-            if any(m in query_lower for m in fact_markers):
-                intent = "Fact-Seeking"
-                sw = sw if sw is not None else 0.7
-                iw = iw if iw is not None else 0.1
-                dw = dw if dw is not None else 0.2
-            else:
-                sw = sw if sw is not None else 0.4
-                iw = iw if iw is not None else 0.4
-                dw = dw if dw is not None else 0.2
-        else:
-            intent = "Manual Override"
-
-        logger.info(f"Retrieval Intent: {intent} (sim_w={sw}, imp_w={iw}, dec_w={dw})")
-        
-        status_filter = "('ACTIVE')" if not include_archived else "('ACTIVE', 'ARCHIVED')"
-        
-        # Detect if 'clean slate' requested (Bypass anchors/gravity)
-        keywords = ["clean slate", "new idea", "fresh start", "forget history", "new project"]
-        is_fresh = any(k in query_text.lower() for k in keywords)
-        
-        anchors = []
-        if not is_fresh and self.enrichment:
-            anchors = self.enrichment.extract_query_anchors(query_text)
-
-        # A. Semantic Anchoring (Graph-First)
-        graph_anchored_ids = []
-        if anchors:
-            graph_anchored_ids = self.graph.get_memories_by_entities(anchors)
-            if graph_anchored_ids:
-                id_placeholders = ",".join(["?"] * len(graph_anchored_ids))
-                query = f"SELECT id, content_full, content_abstract, token_count_full, token_count_abstract, importance_score, learned_at, expires_at, memory_type, metadata, guid FROM memories WHERE id IN ({id_placeholders}) AND status IN {status_filter}"
-                cursor.execute(query, tuple(graph_anchored_ids))
-                for row in cursor.fetchall():
-                    m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp, m_type, meta, guid = row
-                    decay = self._calculate_decay(lat, imp, exp)
-                    
-                    # Graph anchors get a boost
-                    score = (0.6 * sw) + (min(imp / 10.0, 1.0) * iw) + (decay * dw) + 0.2
-                    
-                    candidates.append({
-                        "id": m_id, "content_full": c_f, "content_abstract": c_a,
-                        "tc_full": tc_f or (len(c_f) // 4), "tc_abstract": tc_a or (len(c_a or "") // 4),
-                        "score": score, "importance": imp, "learned_at": lat, "source": "anchor",
-                        "type": m_type, "metadata": meta, "guid": guid
-                    })
-                    seen_ids.add(m_id)
-
-        # B. Vector Fallback (Broad Search)
-        # Triggered if freshness is requested OR we have fewer than 3 graph results
-        if is_fresh or len(candidates) < 3:
-            candidate_limit = limit * 3
-            try:
-                import sqlite_vec
-                filter_clause = ""
-                v_params = [sqlite_vec.serialize_float32(query_vector), candidate_limit]
-                
-                if allowed_owners:
-                    placeholders = ",".join(["?"] * len(allowed_owners))
-                    filter_clause = f"AND (m.owner_id IN ({placeholders}) OR m.privacy = 'PUBLIC')"
-                    v_params.extend(allowed_owners)
-                
-                v_query = f"""
-                    SELECT m.id, m.content_full, m.content_abstract, m.token_count_full, m.token_count_abstract, m.importance_score, m.learned_at, m.expires_at, v.distance, m.memory_type, m.metadata, m.guid
-                    FROM memories_vec v JOIN memories m ON v.rowid = m.id
-                    WHERE v.embedding MATCH ? AND v.k = ? AND m.status IN {status_filter} {filter_clause}
-                    ORDER BY v.distance ASC
-                """
-                cursor.execute(v_query, v_params)
-                for row in cursor.fetchall():
-                    m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp, dist, m_type, meta, guid = row
-                    if m_id in seen_ids: continue
-                    
-                    similarity = 1.0 / (1.0 + dist)
-                    
-                    # --- THE PRECISION GATE ---
-                    # Filter out noise before it enters the candidate pool
-                    if similarity < 0.45:
-                        continue
-                        
-                    decay = 1.0 if is_fresh else self._calculate_decay(lat, imp, exp)
-                    
-                    final_score = (similarity * sw) + (min(imp / 10.0, 1.0) * iw) + (decay * dw)
-                    
-                    candidates.append({
-                        "id": m_id, "content_full": c_f, "content_abstract": c_a,
-                        "tc_full": tc_f or (len(c_f) // 4), "tc_abstract": tc_a or (len(c_a or "") // 4),
-                        "score": final_score, "importance": imp, "learned_at": lat, "source": "vector",
-                        "type": m_type, "metadata": meta, "guid": guid
-                    })
-                    seen_ids.add(m_id)
-            except Exception as e:
-                logger.error(f"Vector fallback failed: {e}")
-
-        # C. Graph Augmentation (Connections from top results)
-        depth_reached = 0
-        avg_signal = 0.0
-        if not is_fresh:
-            seed_ids = [c["id"] for c in sorted(candidates, key=lambda x: x["score"], reverse=True)[:3]]
-            if seed_ids:
-                # Calculate dynamic gravity before expansion
-                gravity = self._calculate_gravity(query_text, candidates[:5])
-                
-                # --- ITERATIVE 1-HOP DOMINANCE ---
-                # Attempt Depth 1 First
-                linked_results = self.graph.get_related_memories(seed_ids, anchor_entities=anchors, gravity=gravity, depth=1)
-                depth_reached = 1
-                
-                # Assess Signal Strength
-                count = len(linked_results)
-                avg_signal = sum(linked_results.values()) / count if count > 0 else 0.0
-                
-                # If signal is weak (few results OR low confidence), try Depth 2
-                if count < 3 or avg_signal < 0.6:
-                    logger.debug(f"Weak 1-hop signal ({count} results, {avg_signal:.2f} avg). Expanding to Depth 2...")
-                    linked_results = self.graph.get_related_memories(seed_ids, anchor_entities=anchors, gravity=gravity, depth=2)
-                    depth_reached = 2
-                    avg_signal = sum(linked_results.values()) / len(linked_results) if linked_results else 0.0
-                
-                logger.info(f"Graph Expansion Complete. Depth: {depth_reached}, Signal: {avg_signal:.2f}, Found: {len(linked_results)}")
-                
-                new_ids = [i for i in linked_results.keys() if i not in seen_ids]
-                if new_ids:
-                    id_placeholders = ",".join(["?"] * len(new_ids))
-                    fetch_query = f"SELECT id, content_full, content_abstract, token_count_full, token_count_abstract, importance_score, learned_at, expires_at, memory_type, metadata, guid FROM memories WHERE id IN ({id_placeholders}) AND status IN {status_filter}"
-                    cursor.execute(fetch_query, tuple(new_ids))
-                    for row in cursor.fetchall():
-                        m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp, m_type, meta, guid = row
-                        decay = self._calculate_decay(lat, imp, exp)
-                        
-                        # Graph boost incorporates the discovery score from graph traversal
-                        discovery_boost = linked_results.get(m_id, 0.5) # Default to 0.5 if missing
-                        score = (0.4 * sw) + (min(imp / 10.0, 1.0) * iw) + (discovery_boost * 0.1) + (decay * dw)
-                        
-                        candidates.append({
-                            "id": m_id, "content_full": c_f, "content_abstract": c_a,
-                            "tc_full": tc_f or (len(c_f) // 4), "tc_abstract": tc_a or (len(c_a or "") // 4),
-                            "score": score, "importance": imp, "learned_at": lat, "source": "graph",
-                            "type": m_type, "metadata": meta, "guid": guid
-                        })
-                        seen_ids.add(m_id)
-
-        # D. Budget-Aware Selection (Same as before)
-        candidates.sort(key=lambda x: x["score"], reverse=True)
-        results = []
-        current_tokens = 0
-        for c in candidates:
-            if len(results) >= limit: break
-            chosen_content = None
-            chosen_tokens = 0
-            version = "full"
+        # 2. Discovery Phase
+        for handler in self.discovery_pipeline:
+            handler.process(context, self)
             
-            if strategy == "abstract_only" and c["content_abstract"]:
-                chosen_content = c["content_abstract"]; chosen_tokens = c["tc_abstract"]; version = "abstract"
-            else:
-                if current_tokens + c["tc_full"] <= token_budget:
-                    chosen_content = c["content_full"]; chosen_tokens = c["tc_full"]; version = "full"
-                elif c["content_abstract"] and current_tokens + c["tc_abstract"] <= token_budget:
-                    chosen_content = c["content_abstract"]; chosen_tokens = c["tc_abstract"]; version = "abstract"
+        # 3. Ranking & Expansion Phase
+        for handler in self.ranking_pipeline:
+            handler.process(context, self)
             
-            if chosen_content:
-                # 1. Map Metadata
-                label = "Incidental"
-                if c["importance"] >= 8.0: label = "Critical"
-                elif c["importance"] >= 4.0: label = "Relevant"
-                
-                date_str = "Unknown"
-                if c["learned_at"]:
-                    date_str = c["learned_at"].split("T")[0] if "T" in c["learned_at"] else c["learned_at"].split(" ")[0]
-                
-                location = "N/A"
-                if c.get("metadata"):
-                    try:
-                        meta_dict = json.loads(c["metadata"]) if isinstance(c["metadata"], str) else c["metadata"]
-                        location = meta_dict.get("location") or meta_dict.get("geolocation") or "N/A"
-                    except:
-                        pass
-
-                # 2. Build Structured Header
-                # We use the GUID for the unique identifier as requested
-                guid = c.get("guid") or f"mem_{c['id']}"
-                header = (
-                    f"### MEMORY ID: {guid}\n"
-                    f"- Timestamp: {date_str}\n"
-                    f"- Category: {c['type']}\n"
-                    f"- Importance: {label}\n"
-                    f"- Location: {location}\n"
-                    f"- Context:\n"
-                )
-                
-                # Indent content for clarity under the "Context:" header
-                indented_content = "  " + chosen_content.replace("\n", "\n  ")
-                display_content = header + indented_content
-
-                if c["type"] == "OBSERVATION" or c["source"] in ["graph", "anchor"]:
-                    neighbors_summary = self.graph.get_neighbors_summary(c["id"])
-                    if neighbors_summary:
-                        display_content += f"\n  {neighbors_summary.strip()}"
-                    
-                # Hierarchical Discovery: Append Child IDs if they exist
-                if c["type"] == "OBSERVATION" and c.get("metadata"):
-                    try:
-                        meta = json.loads(c["metadata"]) if isinstance(c["metadata"], str) else c["metadata"]
-                        child_ids = meta.get("source_ids", [])
-                        if child_ids:
-                            display_content += f"\n  [Nuanced Details available via recall_reverie for IDs: {child_ids}]"
-                    except:
-                        pass
-
-                results.append({"id": c["id"], "content": display_content, "tokens": chosen_tokens, "version": version, "score": c["score"]})
-                current_tokens += chosen_tokens
-        
-        logger.info(f"Retrieved {len(results)} memories ({current_tokens}/{token_budget} tokens). Strategy: {strategy}, IsFresh: {is_fresh}")
-        
-        # 5. Update Access Timestamps (Asynchronous call to DB)
-        if results:
-            self.db.update_access_timestamp([r["id"] for r in results])
+        # 4. Budgeting Phase
+        for handler in self.budget_pipeline:
+            handler.process(context, self)
             
-        return results
+        logger.info(f"Retrieved {len(context.results)} memories ({context.consumed_tokens}/{token_budget} tokens). Intent: {context.intent}, Metrics: {context.metrics}")
+        
+        # 5. Update Access Timestamps
+        if context.results:
+            self.db.update_access_timestamp([r["id"] for r in context.results])
+            
+        return context.results
 
     def find_duplicates(self, query_vector: List[float], threshold: float = 0.95, 
                         allowed_owners: List[str] = None) -> List[Dict[str, Any]]:
