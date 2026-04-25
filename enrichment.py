@@ -13,8 +13,104 @@ import torch
 import torch.nn.functional as F
 from sentence_transformers import SentenceTransformer
 from .schemas import MemoryType, RelationType
+from abc import ABC, abstractmethod
 
 logger = logging.getLogger(__name__)
+
+class ImportanceHandler(ABC):
+    """Abstract base class for all importance scoring logic."""
+    @abstractmethod
+    def process(self, text: str) -> Dict[str, Any]:
+        """
+        Must return:
+        {
+            "score": float, 
+            "confidence": float (0.0 to 1.0),
+            "handler_name": str
+        }
+        """
+        pass
+
+class HeuristicHandler(ImportanceHandler):
+    """Tier 1: Fast, rule-based scoring (Errors, Deadlines)."""
+    def __init__(self, service: 'EnrichmentService'):
+        self.service = service
+
+    def process(self, text: str) -> Dict[str, Any]:
+        text_lower = text.lower()
+        is_important = False
+        
+        # 1. Error & Failure Patterns
+        if any(term in text_lower for term in ["error", "exception", "traceback", "failed", "crash", "broken", "bug"]):
+            is_important = True
+        # 2. Project/Temporal Urgency
+        elif any(term in text_lower for term in ["deadline", "critical", "urgent", "asap", "priority", "important"]):
+            is_important = True
+        # 3. Security/Identity
+        elif any(term in text_lower for term in ["password", "secret", "api_key", "token", "auth", "credentials"]):
+            is_important = True
+        # 4. Structural markers
+        elif "```" in text or "def " in text or "class " in text or "import " in text:
+            is_important = True
+            
+        if is_important:
+            return {"score": 9.5, "confidence": 1.0, "handler_name": "heuristics"}
+        return {"score": 0.0, "confidence": 0.0, "handler_name": "heuristics"}
+
+class BARTHandler(ImportanceHandler):
+    """Tier 2: Local semantic weight using mDeBERTa-v3/BART."""
+    def __init__(self, service: 'EnrichmentService'):
+        self.service = service
+
+    def process(self, text: str) -> Dict[str, Any]:
+        labels = ["critical", "important", "minor", "trivial"]
+        scores = self.service._zero_shot_classify(text, labels, "This information is {}.")
+        
+        # Confidence Math: We use the max probability as a measure of certainty
+        max_prob = max(scores.values())
+        
+        # Weighted average shifted to 0-10 scale
+        raw_score = (scores["critical"] * 10.0) + (scores["important"] * 7.0) + (scores["minor"] * 3.0) + (scores["trivial"] * 1.0)
+        importance = max(0.0, min(10.0, raw_score))
+        
+        return {
+            "score": float(importance),
+            "confidence": float(max_prob),
+            "handler_name": "bart"
+        }
+
+class SoulHandler(ImportanceHandler):
+    """Tier 3: Identity-relative scoring via remote LLM."""
+    def __init__(self, service: 'EnrichmentService'):
+        self.service = service
+
+    def process(self, text: str) -> Dict[str, Any]:
+        if not self.service.soul_prompt or not self.service.llm_client.check_connectivity():
+            return {"score": 0.0, "confidence": 0.0, "handler_name": "soul"}
+
+        try:
+            prompt = f"""
+You are an expert operating under these principles: {self.service.soul_prompt}.
+Assess the importance of this information on a scale of 0-10.
+- Information critical to your goals and role gets 9-10.
+- Information that is merely 'nice to know' gets 4-6.
+- Incidental or conversational noise gets 0-2.
+
+Output ONLY the JSON: {{"importance": float, "confidence": float}}
+
+Information: {text[:2000]}
+"""
+            resp = self.service.llm_client.call([
+                {"role": "system", "content": "You are a professional importance scoring utility."},
+                {"role": "user", "content": prompt}
+            ], json_mode=True)
+            
+            score = resp.get("importance", 2.0) if isinstance(resp, dict) else 2.0
+            conf = resp.get("confidence", 0.5) if isinstance(resp, dict) else 0.5
+            return {"score": float(score), "confidence": float(conf), "handler_name": "soul"}
+        except Exception as e:
+            logger.warning(f"SoulHandler failed: {e}")
+            return {"score": 0.0, "confidence": 0.0, "handler_name": "soul"}
 
 class ConfigLoader:
     """Helper to parse ~/.hermes/config.yaml without external dependencies like PyYAML."""
@@ -204,10 +300,22 @@ class EnrichmentService:
             model_name=model_name
         )
         
+        # Identity / Soul Property
+        self.soul_prompt = self._load_soul_prompt()
+        
+        # Pipeline Configuration (Thresholds can be moved to config later)
+        self.pipeline = [
+            (HeuristicHandler(self), 0.9),
+            (BARTHandler(self), 0.8),
+            (SoulHandler(self), 0.0) # Fallback
+        ]
+        
         # Telemetry
         self.telemetry = {"success": 0, "failure": 0}
         
         logger.info(f"EnrichmentService initialized. LLM Source: {self.llm_client.base_url}, Model: {self.llm_client.model_name}")
+        if self.soul_prompt:
+            logger.info("Soul-Aware Importance Scoring enabled.")
 
     def _ensure_loaded(self, models: List[str]):
         """Thread-safe lazy loader for specific model backends."""
@@ -336,42 +444,60 @@ class EnrichmentService:
         ]
         return self._zero_shot_classify(query, labels, "The user intent is {}.")
 
+    def set_soul(self, prompt: str):
+        """Updates the agent's identity/personality context for scoring."""
+        self.soul_prompt = prompt
+        logger.info("EnrichmentService soul updated.")
+
+    def _load_soul_prompt(self) -> Optional[str]:
+        """Loads personality prompt from SOUL.md in Hermes home."""
+        try:
+            from hermes_constants import get_hermes_home
+            soul_path = get_hermes_home() / "SOUL.md"
+            if soul_path.exists():
+                content = soul_path.read_text().strip()
+                if content:
+                    return content
+        except Exception as e:
+            logger.debug(f"Failed to load soul prompt: {e}")
+        return None
+
     def calculate_importance(self, text: str) -> Dict[str, Any]:
         """
-        Uses BART to weigh the importance of a memory on a 0.0-10.0 scale.
-        Also suggests an expiration for low-importance transient chatter.
+        Grated Pipeline for importance scoring.
+        Iterates through handlers and exits early if confidence threshold is met.
         """
-        try:
-            labels = ["critical", "important", "minor", "trivial"]
-            scores = self._zero_shot_classify(text, labels, "This information is {}.")
-            
-            # Weighted average shifted to 0-10 scale
-            raw_score = (scores["critical"] * 10.0) + (scores["important"] * 7.0) + (scores["minor"] * 3.0) + (scores["trivial"] * 1.0)
-            importance = max(0.0, min(10.0, raw_score))
-            
-            expires_at = None
-            # If trivial or minor and conversation-heavy, suggest expiration (7 days)
-            # 5.0 is the new midpoint for 0-10 scale
-            if importance < 5.0:
-                from datetime import datetime, timedelta
-                expires_at = (datetime.utcnow() + timedelta(days=7)).isoformat()
+        final_result = {"score": 2.0, "handler_name": "default"}
+        
+        for handler, threshold in self.pipeline:
+            try:
+                result = handler.process(text)
+                if result["confidence"] >= threshold:
+                    logger.debug(f"Importance Pipeline: Early exit via {handler.__class__.__name__} (Score: {result['score']}, Conf: {result['confidence']})")
+                    return {"score": result["score"], "expires_at": self._get_expiration(result["score"])}
                 
-            # Heuristic Boosts (Sentiment & Keywords)
-            text_lower = text.lower()
-            frustrated_terms = ["frustrated", "error", "failing", "broken", "help", "worst"]
-            if any(term in text_lower for term in frustrated_terms):
-                importance = min(10.0, importance + 3.0)
+                # Keep the result from the most "confident" handler so far as a backup
+                if result["confidence"] > final_result.get("confidence", -1):
+                    final_result = result
+            except Exception as e:
+                logger.warning(f"Handler {handler.__class__.__name__} failed: {e}")
                 
-            important_keywords = ["deadline", "critical", "password", "secret", "project"]
-            if any(kw in text_lower for kw in important_keywords):
-                importance = min(10.0, importance + 1.0)
+        return {"score": final_result["score"], "expires_at": self._get_expiration(final_result["score"])}
 
-            return {"score": importance, "expires_at": expires_at}
+    def _get_expiration(self, importance: float) -> Optional[str]:
+        """Suggests an expiration for low-importance memories."""
+        if importance < 5.0:
+            from datetime import datetime, timedelta
+            return (datetime.utcnow() + timedelta(days=7)).isoformat()
+        return None
 
-        except Exception as e:
-            logger.warning(f"Importance scoring failed: {e}")
-            return {"score": 2.0, "expires_at": None}
+    def is_structurally_important(self, text: str) -> bool:
+        """DEPRECATED: Use HeuristicHandler instead."""
+        return HeuristicHandler(self).process(text)["confidence"] > 0.0
 
+    def calculate_importance_with_soul(self, text: str, soul_prompt: str) -> Dict[str, Any]:
+        """DEPRECATED: Use SoulHandler instead."""
+        return SoulHandler(self).process(text)
     def classify_type(self, text: str) -> MemoryType:
         """Robust zero-shot classification using BART."""
         try:

@@ -15,6 +15,13 @@ dist/
 .coverage
 htmlcov/
 .mypy_cache/
+tests/test_data/
+tests/*.db*
+tests/*.db-wal
+tests/*.db-shm
+reverie.db
+*.db-shm
+*.db-wal
 
 # Environments
 .env

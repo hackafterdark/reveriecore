@@ -24,14 +24,14 @@ We define three primary categories of anchors used to narrow the search space:
 ### Phase 1: The Multi-Dimensional Scoring Engine
 The `Retriever` implements a weighted ranking system that combines three primary signals:
 - **Vector Similarity ($w_1=0.5$)**: Semantic proximity of text.
-- **BART Importance ($w_2=0.3$)**: The objective value of the fact.
+- **Grated Importance ($w_2=0.3$)**: The objective/subjective value of the fact (0.0 - 10.0 scale).
 - **Temporal Decay ($w_3=0.2$)**: Recency bias.
 - **Graph Anchor Boost ($+0.2$)**: A hard bonus for memories directly linked to query entities.
 
 ### Phase 2: Importance-Aware Decay
 To preserve core project knowledge while keeping the conversation "fresh":
-- **Low Importance (< 4.0)**: Uses a **48-hour half-life exponential decay**. Memories naturally fade to prioritize the current task.
-- **High Importance (>= 4.0)**: Assigned **Permanent Weight**. Critical architectural facts or user preferences never decay.
+- **Low Importance (< 5.0)**: Uses a **48-hour half-life exponential decay**. Memories naturally fade to prioritize the current task.
+- **High Importance (>= 5.0)**: Assigned **Permanent Weight**. Critical architectural facts, user preferences, or personality-aligned data never decay.
 
 ### Phase 3: Behavioral Controls (Freshness Mode)
 To prevent "Behavioral Anchoring" (where the agent is trapped by its history), the system includes an automated **Freshness Detection** trigger.

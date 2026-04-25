@@ -164,6 +164,11 @@ class ReverieMemoryProvider(MemoryProvider):
             elif key in model_meta:
                 self._last_turn_metadata[key] = model_meta[key]
 
+        # Handle Dynamic Personality/Soul Updates
+        soul_update = kwargs.get("soul_prompt") or kwargs.get("personality") or model_meta.get("personality")
+        if soul_update and self._enrichment:
+            self._enrichment.set_soul(soul_update)
+
         logger.debug(f"ReverieCore Turn {turn_number}: Remaining Budget: {self.remaining_tokens}/{self.total_context}")
 
     def _calculate_budget(self) -> int:

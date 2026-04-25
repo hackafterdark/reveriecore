@@ -25,9 +25,10 @@ def setup_standalone_mocks():
     
     hc = MagicMock()
     # USE A SAFE TEMP DIR, NOT ~/.hermes
-    temp_dir = Path("/tmp/reverie_ingest_test")
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    hc.get_hermes_home = lambda: temp_dir
+    # temp_dir = Path("/tmp/reverie_ingest_test")
+    test_dir = Path(__file__).parent.resolve() / "test_data"
+    test_dir.mkdir(parents=True, exist_ok=True)
+    hc.get_hermes_home = lambda: test_dir
     sys.modules["hermes_constants"] = hc
 
 if __name__ == "__main__":

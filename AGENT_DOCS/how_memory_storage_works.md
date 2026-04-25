@@ -11,8 +11,12 @@ $$\text{Agent} \xrightarrow{\text{Raw Text}} \text{PYTHON PLUGIN} \xrightarrow[\
 #### 1. Classification (BART Zero-Shot)
 Instead of brittle keywords, we use a **BART-Large-MNLI** model to perform zero-shot classification on the raw content. This accurately maps memories into the `MemoryType` taxonomy (e.g., `TASK`, `RUNTIME_ERROR`, `USER_PREFERENCE`).
 
-#### 2. Importance Scoring (Weighted Entailment)
-The plugin calculates the `importance_score` (1.0 - 5.0) by measuring how much the memory entails labels like "critical" or "important" using the BART model. This replaces simple keyword heuristics with deep semantic understanding.
+#### 2. Importance Scoring (Grated Cascading Pipeline)
+The plugin calculates the `importance_score` (0.0 - 10.0) using a tiered **Cascading Pipeline**. This system optimizes for both speed and identity-alignment:
+- **Heuristics (Tier 1)**: Instant keyword/structural detection for errors and deadlines.
+- **BART (Tier 2)**: Local zero-shot semantic weight assessment.
+- **Soul (Tier 3)**: High-fidelity LLM assessment relative to the agent's active personality.
+The system uses **Confidence Thresholds** to "early-exit" the pipeline the moment a reliable score is found, ensuring minimal latency.
 
 #### 3. Identity and Audit Tracking
 Every memory is tagged with five identity/audit fields to ensure enterprise-grade provenance:
