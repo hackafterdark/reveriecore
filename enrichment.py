@@ -13,31 +13,43 @@ import torch
 import torch.nn.functional as F
 from sentence_transformers import SentenceTransformer
 from .schemas import MemoryType, RelationType
+from .config import load_reverie_config
 from abc import ABC, abstractmethod
 
 logger = logging.getLogger(__name__)
 
-class ImportanceHandler(ABC):
-    """Abstract base class for all importance scoring logic."""
+class EnrichmentContext:
+    """Mutable state container for the enrichment (ingestion) pipeline."""
+    def __init__(self, text: str, env: Optional[Any] = None, metadata: Dict[str, Any] = None):
+        self.text = text
+        self.env = env # EnvironmentalContext
+        self.metadata = metadata or {}
+        
+        # Intermediate/Final Outputs
+        self.memory_type: MemoryType = MemoryType.CONVERSATION
+        self.importance_score: float = 2.0
+        self.profile: str = ""
+        self.embedding: List[float] = []
+        self.entities: List[Dict] = []
+        self.relations: List[Dict] = []
+        
+        self.metrics: Dict[str, Any] = {}
+        self.expires_at: Optional[str] = None
+        self.token_count_full: int = 0
+        self.token_count_abstract: int = 0
+
+class EnrichmentHandler(ABC):
+    """Abstract base class for all enrichment pipeline handlers."""
     @abstractmethod
-    def process(self, text: str) -> Dict[str, Any]:
-        """
-        Must return:
-        {
-            "score": float, 
-            "confidence": float (0.0 to 1.0),
-            "handler_name": str
-        }
-        """
+    def process(self, context: EnrichmentContext, service: 'EnrichmentService') -> None:
         pass
 
-class HeuristicHandler(ImportanceHandler):
-    """Tier 1: Fast, rule-based scoring (Errors, Deadlines)."""
-    def __init__(self, service: 'EnrichmentService'):
-        self.service = service
+# --- Importance Handlers ---
 
-    def process(self, text: str) -> Dict[str, Any]:
-        text_lower = text.lower()
+class HeuristicImportance(EnrichmentHandler):
+    """Tier 1: Fast, rule-based scoring (Errors, Deadlines)."""
+    def process(self, context: EnrichmentContext, service: 'EnrichmentService') -> None:
+        text_lower = context.text.lower()
         is_important = False
         
         # 1. Error & Failure Patterns
@@ -50,67 +62,110 @@ class HeuristicHandler(ImportanceHandler):
         elif any(term in text_lower for term in ["password", "secret", "api_key", "token", "auth", "credentials"]):
             is_important = True
         # 4. Structural markers
-        elif "```" in text or "def " in text or "class " in text or "import " in text:
+        elif "```" in text_lower or "def " in text_lower or "class " in text_lower or "import " in text_lower:
             is_important = True
             
         if is_important:
-            return {"score": 9.5, "confidence": 1.0, "handler_name": "heuristics"}
-        return {"score": 0.0, "confidence": 0.0, "handler_name": "heuristics"}
+            context.importance_score = 9.5
+            context.metrics["importance_source"] = "heuristics"
+            context.metrics["stage_complete"] = True
+            
+            # Heuristic Type Override
+            if any(kw in text_lower for kw in ["error", "exception", "traceback"]):
+                context.memory_type = MemoryType.RUNTIME_ERROR
+            elif any(kw in text_lower for kw in ["todo", "task", "goal"]):
+                context.memory_type = MemoryType.TASK
 
-class BARTHandler(ImportanceHandler):
+class ModelImportance(EnrichmentHandler):
     """Tier 2: Local semantic weight using mDeBERTa-v3/BART."""
-    def __init__(self, service: 'EnrichmentService'):
-        self.service = service
-
-    def process(self, text: str) -> Dict[str, Any]:
+    def process(self, context: EnrichmentContext, service: 'EnrichmentService') -> None:
+        if context.importance_score > 5.0: # Skip if heuristics already flagged it
+            return
+            
         labels = ["critical", "important", "minor", "trivial"]
-        scores = self.service._zero_shot_classify(text, labels, "This information is {}.")
-        
-        # Confidence Math: We use the max probability as a measure of certainty
-        max_prob = max(scores.values())
+        scores = service._zero_shot_classify(context.text, labels, "This information is {}.")
         
         # Weighted average shifted to 0-10 scale
         raw_score = (scores["critical"] * 10.0) + (scores["important"] * 7.0) + (scores["minor"] * 3.0) + (scores["trivial"] * 1.0)
-        importance = max(0.0, min(10.0, raw_score))
-        
-        return {
-            "score": float(importance),
-            "confidence": float(max_prob),
-            "handler_name": "bart"
-        }
+        context.importance_score = max(0.0, min(10.0, raw_score))
+        context.metrics["importance_source"] = "model"
 
-class SoulHandler(ImportanceHandler):
+class SoulImportance(EnrichmentHandler):
     """Tier 3: Identity-relative scoring via remote LLM."""
-    def __init__(self, service: 'EnrichmentService'):
-        self.service = service
-
-    def process(self, text: str) -> Dict[str, Any]:
-        if not self.service.soul_prompt or not self.service.llm_client.check_connectivity():
-            return {"score": 0.0, "confidence": 0.0, "handler_name": "soul"}
+    def process(self, context: EnrichmentContext, service: 'EnrichmentService') -> None:
+        if not service.soul_prompt or not service.llm_client.check_connectivity():
+            return
 
         try:
             prompt = f"""
-You are an expert operating under these principles: {self.service.soul_prompt}.
+You are an expert operating under these principles: {service.soul_prompt}.
 Assess the importance of this information on a scale of 0-10.
 - Information critical to your goals and role gets 9-10.
 - Information that is merely 'nice to know' gets 4-6.
 - Incidental or conversational noise gets 0-2.
 
 Output ONLY the JSON: {{"importance": float, "confidence": float}}
-
-Information: {text[:2000]}
 """
-            resp = self.service.llm_client.call([
+            res = service.llm_client.call([
                 {"role": "system", "content": "You are a professional importance scoring utility."},
-                {"role": "user", "content": prompt}
+                {"role": "user", "content": prompt + f"\n\nInformation: {context.text[:2000]}"}
             ], json_mode=True)
             
-            score = resp.get("importance", 2.0) if isinstance(resp, dict) else 2.0
-            conf = resp.get("confidence", 0.5) if isinstance(resp, dict) else 0.5
-            return {"score": float(score), "confidence": float(conf), "handler_name": "soul"}
+            if res and "importance" in res:
+                conf = res.get("confidence", 0.9)
+                context.importance_score = res["importance"]
+                context.metrics["importance_source"] = "soul"
+                context.metrics["importance_confidence"] = conf
+                
+                # If very confident, we can mark this stage as "resolved" 
+                # (to be used by orchestrator for early exit)
+                if conf >= 0.9:
+                    context.metrics["stage_complete"] = True
         except Exception as e:
-            logger.warning(f"SoulHandler failed: {e}")
-            return {"score": 0.0, "confidence": 0.0, "handler_name": "soul"}
+            logger.debug(f"Soul scoring failed: {e}")
+
+# --- Analysis Handlers ---
+
+class TypeClassifier(EnrichmentHandler):
+    """Zero-shot classification for MemoryType."""
+    def process(self, context: EnrichmentContext, service: 'EnrichmentService') -> None:
+        # 1. Heuristic Overrides
+        text_lower = context.text.lower()
+        if any(kw in text_lower for kw in ["error", "exception", "traceback"]):
+            context.memory_type = MemoryType.RUNTIME_ERROR
+            return
+        if any(kw in text_lower for kw in ["todo", "task", "goal"]):
+            context.memory_type = MemoryType.TASK
+            return
+            
+        # 2. Model Classification
+        mapping = {
+            "observation, fact, status": MemoryType.OBSERVATION,
+            "source code, programming, snippet, code": MemoryType.CODE_SNIPPET,
+            "user preference, personalization": MemoryType.USER_PREFERENCE,
+            "learning, discovery, insight": MemoryType.LEARNING_EVENT,
+            "expired task, overdue": MemoryType.EXPIRED_TASK,
+            "conversation, dialogue, chat": MemoryType.CONVERSATION
+        }
+        
+        scores = service._zero_shot_classify(context.text, list(mapping.keys()), "This information is {}.")
+        best_label = max(scores, key=scores.get)
+        context.memory_type = mapping[best_label]
+        context.metrics["classification_confidence"] = scores[best_label]
+
+# --- Profiling Handlers ---
+
+class SemanticProfiler(EnrichmentHandler):
+    """Generates a 1-2 sentence 'gist' of the memory."""
+    def process(self, context: EnrichmentContext, service: 'EnrichmentService') -> None:
+        context.profile = service.generate_semantic_profile(context.text)
+
+class TextEmbedder(EnrichmentHandler):
+    """Generates a 384-dim vector for the semantic profile."""
+    def process(self, context: EnrichmentContext, service: 'EnrichmentService') -> None:
+        # Embed the profile for cleaner signal, or fallback to full text
+        source = context.profile or context.text
+        context.embedding = service.generate_embedding(source)
 
 class ConfigLoader:
     """Helper to parse ~/.hermes/config.yaml without external dependencies like PyYAML."""
@@ -240,8 +295,9 @@ class EnrichmentService:
     """The Intelligence Layer: Handles embeddings, BART classification, and profiling."""
     
     def __init__(self, config: Optional[Dict[str, Any]] = None, **kwargs):
-        # 1. Resolve Model Names (Prefer config dict, then kwargs, then defaults)
-        cfg = config or kwargs.get("config", {})
+        # 1. Resolve Configuration
+        self.config = config or load_reverie_config()
+        cfg = self.config
         
         self.embedding_model_name = cfg.get("embedding_model") or kwargs.get("embedding_model_name") or "all-MiniLM-L6-v2"
         self.summarization_model_name = cfg.get("summarization_model") or kwargs.get("summarization_model_name") or "sshleifer/distilbart-cnn-12-6"
@@ -267,15 +323,15 @@ class EnrichmentService:
         self._init_lock = threading.Lock()
 
         # LLM Client for Graph Extraction
-        cfg = ConfigLoader.load_config()
+        h_cfg = ConfigLoader.load_config()
         
         # Priority Logic for Provider Selection:
         # 1. Use root-level 'model' section (Hermes default)
         # 2. Use 'custom_providers' catalog
         # 3. Fallback to localhost
         
-        model_cfg = cfg.get("model", {})
-        providers = cfg.get("providers", [])
+        model_cfg = h_cfg.get("model", {})
+        providers = h_cfg.get("providers", [])
         
         # Determine base_url
         base_url = model_cfg.get("base_url")
@@ -300,18 +356,36 @@ class EnrichmentService:
             model_name=model_name
         )
         
-        # Identity / Soul Property
-        self.soul_prompt = self._load_soul_prompt()
+        # Handler Registry for Enrichment
+        self.HANDLER_REGISTRY = {
+            "heuristics": HeuristicImportance,
+            "model_importance": ModelImportance,
+            "soul_importance": SoulImportance,
+            "classifier": TypeClassifier,
+            "profiler": SemanticProfiler,
+            "embedder": TextEmbedder
+        }
         
-        # Pipeline Configuration (Thresholds can be moved to config later)
-        self.pipeline = [
-            (HeuristicHandler(self), 0.9),
-            (BARTHandler(self), 0.8),
-            (SoulHandler(self), 0.0) # Fallback
-        ]
+        # Pipeline Configuration (from config)
+        self.analysis_pipeline: List[EnrichmentHandler] = []
+        pipeline_cfg = self.config.get("enrichment_pipeline", {})
+        
+        # Load analysis stage (Importance & Classification)
+        for h_name in pipeline_cfg.get("analysis", ["heuristics", "classifier", "model_importance", "soul_importance"]):
+            if h_name in self.HANDLER_REGISTRY:
+                self.analysis_pipeline.append(self.HANDLER_REGISTRY[h_name]())
+                
+        # Load profiling stage (Summary & Embedding)
+        self.profiling_pipeline: List[EnrichmentHandler] = []
+        for h_name in pipeline_cfg.get("profiling", ["profiler", "embedder"]):
+            if h_name in self.HANDLER_REGISTRY:
+                self.profiling_pipeline.append(self.HANDLER_REGISTRY[h_name]())
         
         # Telemetry
         self.telemetry = {"success": 0, "failure": 0}
+        
+        # Identity / Soul Property
+        self.soul_prompt = self._load_soul_prompt()
         
         logger.info(f"EnrichmentService initialized. LLM Source: {self.llm_client.base_url}, Model: {self.llm_client.model_name}")
         if self.soul_prompt:
@@ -462,27 +536,36 @@ class EnrichmentService:
             logger.debug(f"Failed to load soul prompt: {e}")
         return None
 
-    def calculate_importance(self, text: str) -> Dict[str, Any]:
-        """
-        Grated Pipeline for importance scoring.
-        Iterates through handlers and exits early if confidence threshold is met.
-        """
-        final_result = {"score": 2.0, "handler_name": "default"}
+    def enrich(self, text: str, env: Optional[Any] = None) -> EnrichmentContext:
+        """Composable Pipeline Orchestrator for ingestion."""
+        context = EnrichmentContext(text, env=env)
         
-        for handler, threshold in self.pipeline:
-            try:
-                result = handler.process(text)
-                if result["confidence"] >= threshold:
-                    logger.debug(f"Importance Pipeline: Early exit via {handler.__class__.__name__} (Score: {result['score']}, Conf: {result['confidence']})")
-                    return {"score": result["score"], "expires_at": self._get_expiration(result["score"])}
-                
-                # Keep the result from the most "confident" handler so far as a backup
-                if result["confidence"] > final_result.get("confidence", -1):
-                    final_result = result
-            except Exception as e:
-                logger.warning(f"Handler {handler.__class__.__name__} failed: {e}")
-                
-        return {"score": final_result["score"], "expires_at": self._get_expiration(final_result["score"])}
+        # 1. Analysis Stage (Classification & Importance)
+        for handler in self.analysis_pipeline:
+            handler.process(context, self)
+            # Early exit if a handler (like Heuristics or Soul) is highly confident
+            if context.metrics.get("stage_complete"):
+                break
+            
+        # 2. Profiling Stage (Summary & Embedding)
+        for handler in self.profiling_pipeline:
+            handler.process(context, self)
+            
+        # Suggested Expiration
+        if context.importance_score < 5.0:
+            from datetime import datetime, timedelta
+            context.expires_at = (datetime.utcnow() + timedelta(days=7)).isoformat()
+            
+        # Token Counts
+        context.token_count_full = self.count_tokens(context.text)
+        context.token_count_abstract = self.count_tokens(context.profile)
+        
+        return context
+
+    def calculate_importance(self, text: str) -> Dict[str, Any]:
+        """Backward compatibility for legacy ingestion calls."""
+        ctx = self.enrich(text)
+        return {"score": ctx.importance_score, "expires_at": ctx.expires_at}
 
     def _get_expiration(self, importance: float) -> Optional[str]:
         """Suggests an expiration for low-importance memories."""
@@ -492,45 +575,20 @@ class EnrichmentService:
         return None
 
     def is_structurally_important(self, text: str) -> bool:
-        """DEPRECATED: Use HeuristicHandler instead."""
-        return HeuristicHandler(self).process(text)["confidence"] > 0.0
+        """DEPRECATED: Use HeuristicImportance instead."""
+        ctx = EnrichmentContext(text)
+        HeuristicImportance().process(ctx, self)
+        return ctx.importance_score > 2.0
 
     def calculate_importance_with_soul(self, text: str, soul_prompt: str) -> Dict[str, Any]:
-        """DEPRECATED: Use SoulHandler instead."""
-        return SoulHandler(self).process(text)
+        """DEPRECATED: Use SoulImportance instead."""
+        ctx = EnrichmentContext(text)
+        self.set_soul(soul_prompt)
+        SoulImportance().process(ctx, self)
+        return {"score": ctx.importance_score}
     def classify_type(self, text: str) -> MemoryType:
-        """Robust zero-shot classification using BART."""
-        try:
-            mapping = {
-                "observation, fact, status": MemoryType.OBSERVATION,
-                "error, exception, crash, trace, failure": MemoryType.RUNTIME_ERROR,
-                "source code, programming, snippet, code": MemoryType.CODE_SNIPPET,
-                "task, goal, action item, todo": MemoryType.TASK,
-                "user preference, personalization": MemoryType.USER_PREFERENCE,
-                "learning, discovery, insight": MemoryType.LEARNING_EVENT,
-                "expired task, overdue": MemoryType.EXPIRED_TASK,
-                "conversation, dialogue, chat": MemoryType.CONVERSATION
-            }
-            
-            # Heuristic Overrides (for speed/reliability in tests)
-            text_lower = text.lower()
-            if any(kw in text_lower for kw in ["error", "exception", "traceback"]):
-                return MemoryType.RUNTIME_ERROR
-            if any(kw in text_lower for kw in ["todo", "task", "goal"]):
-                return MemoryType.TASK
-            if any(kw in text_lower for kw in ["code", "function", "def ", "class "]):
-                return MemoryType.CODE_SNIPPET
-
-            
-            labels = list(mapping.keys())
-            scores = self._zero_shot_classify(text, labels, "This text is about {}.")
-            
-            # Pick the label with the highest entailment score
-            best_label = max(scores, key=scores.get)
-            return mapping[best_label]
-        except Exception as e:
-            logger.warning(f"Zero-shot classification failed: {e}. Falling back to CONVERSATION.")
-            return MemoryType.CONVERSATION
+        """Backward compatibility for legacy classification calls."""
+        return self.enrich(text).memory_type
 
     def extract_query_anchors(self, query: str) -> List[str]:
         """Lighter LLM pass to extract technical entities from a user query."""

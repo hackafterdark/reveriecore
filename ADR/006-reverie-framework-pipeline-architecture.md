@@ -14,11 +14,14 @@ The previous "monolithic" implementation of the `Retriever` and `EnrichmentServi
 ## Decision
 We will evolve Reverie Core into a **Composable Pipeline Framework**. This architecture decouples the core memory storage from the logic used to enrich and retrieve it.
 
-### 1. Unified Pipeline Pattern
-Both ingestion (Enrichment) and retrieval will operate as a **Chain of Responsibility**. 
+### 1. Unified Context-Driven Pattern
+Both ingestion (Enrichment) and retrieval now operate as a **Chain of Responsibility** managed by specialized orchestrators.
 
-- **Enrichment Pipeline**: Already transitioned to a handler-based model (`HeuristicHandler`, `BARTHandler`, `SoulHandler`) where each handler provides a score and a confidence level.
-- **Retrieval Pipeline**: The monolithic `search` method will be refactored into an **Orchestrator** that manages two distinct phases of handlers.
+- **Enrichment Pipeline**: Manages the ingestion of new memories. It utilizes an `EnrichmentContext` to track intermediate states such as memory classification, importance scoring, semantic profiling, and embedding generation.
+- **Retrieval Pipeline**: Manages the discovery and ranking of relevant context. It utilizes a `RetrievalContext` to track candidates, metrics, and token budgets.
+
+### 2. Environmental Decoupling
+To ensure ReverieCore can function across different platforms, we introduced a shared `EnvironmentalContext`. This object captures the "state of the world" (location, user identity, resource constraints) at the start of a processing turn, preventing the core logic from being coupled to specific agent framework APIs (like Hermes's `on_turn_start`).
 
 ### 2. Retrieval Phase Separation
 Retrieval handlers will be categorized into two functional groups:

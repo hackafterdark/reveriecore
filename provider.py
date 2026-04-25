@@ -73,6 +73,7 @@ class ReverieMemoryProvider(MemoryProvider):
         self._mesa_service = None
         self._mirror_service = None
         self._is_shutdown = False
+        self.env = None
 
     @property
     def name(self) -> str:
@@ -87,13 +88,18 @@ class ReverieMemoryProvider(MemoryProvider):
         self._setup_logging()
         
         from hermes_constants import get_hermes_home
+        from .config import load_reverie_config
+        
+        # Load ReverieCore specific config
+        self.config = load_reverie_config()
+        settings = self.config.get("settings", {})
         
         # Database is pinned to the preferred .hermes directory
         db_path = get_hermes_home() / "reveriecore.db"
         
         # Identity Context (Provenance via Author/Actor, Scoping via Owner)
         self.session_id = session_id
-        self.author_id = kwargs.get("user_id") or kwargs.get("user_identity") or "USER"
+        self.author_id = settings.get("user_identity") or kwargs.get("user_id") or kwargs.get("user_identity") or "USER"
         self.owner_id = kwargs.get("agent_identity") or "PERSONAL_WORKSPACE"
         self.actor_id = "REVERIE_SYNC_SERVICE"
         self.workspace = kwargs.get("agent_workspace") or "UNKNOWN_WORKSPACE"
@@ -105,9 +111,8 @@ class ReverieMemoryProvider(MemoryProvider):
             # Restore knowledge graph anchoring by passing enrichment to Retriever
             self._retriever = Retriever(self._db, enrichment=self._enrichment)
             
-            # Capture memory_char_limit if passed from config
-            if "memory_char_limit" in kwargs:
-                self.memory_char_limit = int(kwargs["memory_char_limit"])
+            # Capture memory_char_limit if passed from config (prioritize reveriecore.yaml)
+            self.memory_char_limit = int(settings.get("memory_char_limit", kwargs.get("memory_char_limit", self.memory_char_limit)))
             
             # Register for automatic cleanup on exit
             atexit.register(self.shutdown)
@@ -134,6 +139,16 @@ class ReverieMemoryProvider(MemoryProvider):
                 interval_seconds=int(interval)
             )
             self._mesa_service.start()
+            
+            # Initial Environmental Context
+            from .config import EnvironmentalContext
+            self.env = EnvironmentalContext(
+                user_id=self.author_id,
+                agent_id=self.owner_id,
+                session_id=self.session_id,
+                remaining_tokens=self.remaining_tokens,
+                total_context=self.total_context
+            )
             
             logger.info(f"ReverieCore initialized for {self.author_id} in {self.owner_id} (Actor: {self.actor_id})")
         except Exception as e:
@@ -169,6 +184,13 @@ class ReverieMemoryProvider(MemoryProvider):
         if soul_update and self._enrichment:
             self._enrichment.set_soul(soul_update)
 
+        # Update Environmental Context
+        if self.env:
+            self.env.remaining_tokens = self.remaining_tokens
+            self.env.total_context = self.total_context
+            self.env.metadata = self._last_turn_metadata
+            self.env.session_id = self.session_id
+            
         logger.debug(f"ReverieCore Turn {turn_number}: Remaining Budget: {self.remaining_tokens}/{self.total_context}")
 
     def _calculate_budget(self) -> int:
@@ -233,7 +255,8 @@ class ReverieMemoryProvider(MemoryProvider):
                     limit=3, 
                     token_budget=budget,
                     strategy=strategy,
-                    allowed_owners=[self.owner_id, "PERSONAL_WORKSPACE"]
+                    allowed_owners=[self.owner_id, "PERSONAL_WORKSPACE"],
+                    env=self.env
                 )
                 if results:
                     lines = [f"- {r['content']}" for r in results]
@@ -251,12 +274,13 @@ class ReverieMemoryProvider(MemoryProvider):
             # For turn saving, we focus on the assistant's response or a composite
             full_text = f"User: {user_content}\nAssistant: {assistant_content}"
             
-            # 1. Intelligence Layer Analysis
-            mem_type = self._enrichment.classify_type(full_text)
-            importance_data = self._enrichment.calculate_importance(full_text)
-            importance = importance_data["score"]
-            profile = self._enrichment.generate_semantic_profile(full_text)
-            vec = self._enrichment.generate_embedding(profile) # Embed the profile for cleaner signal
+            # 1. Intelligence Layer Analysis (Modular Pipeline)
+            ctx = self._enrichment.enrich(full_text, env=self.env)
+            
+            mem_type = ctx.memory_type
+            importance = ctx.importance_score
+            profile = ctx.profile
+            vec = ctx.embedding
             
             # 2. Canonical Merge Check
             # Search for duplicates with > 0.95 similarity
@@ -277,23 +301,17 @@ class ReverieMemoryProvider(MemoryProvider):
                     "canonical_knowledge"
                 )
                 
-                # Re-analyze synthesized content
-                new_profile = self._enrichment.generate_semantic_profile(merged_text)
-                new_vec = self._enrichment.generate_embedding(new_profile)
-                new_importance = self._enrichment.calculate_importance(merged_text)["score"]
-                
-                # New Token Counts
-                tc_full = self._enrichment.count_tokens(merged_text)
-                tc_abstract = self._enrichment.count_tokens(new_profile)
+                # Re-analyze synthesized content (Modular Pipeline)
+                m_ctx = self._enrichment.enrich(merged_text, env=self.env)
                 
                 self._db.update_memory(
                     dup_id, 
                     merged_text, 
-                    new_profile, 
-                    new_vec, 
-                    tc_full, 
-                    tc_abstract,
-                    importance_score=new_importance,
+                    m_ctx.profile, 
+                    m_ctx.embedding, 
+                    m_ctx.token_count_full, 
+                    m_ctx.token_count_abstract,
+                    importance_score=m_ctx.importance_score,
                     metadata=metadata
                 )
 
@@ -307,8 +325,8 @@ class ReverieMemoryProvider(MemoryProvider):
                 return 
 
             # 3. Standard Relational Store (if no merge found)
-            tc_full = self._enrichment.count_tokens(full_text)
-            tc_abstract = self._enrichment.count_tokens(profile)
+            tc_full = ctx.token_count_full
+            tc_abstract = ctx.token_count_abstract
             
             with self._db.write_lock() as cursor:
                 import uuid
@@ -499,14 +517,18 @@ class ReverieMemoryProvider(MemoryProvider):
                 if not existing:
                     return tool_error(f"Memory ID {mem_id} not found.")
 
-                # Re-enrich the replacement text
-                profile = self._enrichment.generate_semantic_profile(replacement)
-                vec = self._enrichment.generate_embedding(profile)
-                importance = self._enrichment.calculate_importance(replacement)["score"]
-                tc_f = self._enrichment.count_tokens(replacement)
-                tc_a = self._enrichment.count_tokens(profile)
+                # Re-enrich the replacement text (Modular Pipeline)
+                ctx = self._enrichment.enrich(replacement, env=self.env)
                 
-                self._db.update_memory(mem_id, replacement, profile, vec, tc_f, tc_a, importance_score=importance)
+                self._db.update_memory(
+                    mem_id, 
+                    replacement, 
+                    ctx.profile, 
+                    ctx.embedding, 
+                    ctx.token_count_full, 
+                    ctx.token_count_abstract, 
+                    importance_score=ctx.importance_score
+                )
                 return f"Memory ID {mem_id} has been successfully replaced with the new content."
 
         return tool_error(f"Unsupported memory action: {action}")

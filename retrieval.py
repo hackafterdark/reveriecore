@@ -6,18 +6,20 @@ from typing import List, Dict, Any, Optional, Set
 from abc import ABC, abstractmethod
 from .database import DatabaseManager
 from .graph_query import GraphQueryService
+from .config import load_reverie_config
 
 
 logger = logging.getLogger(__name__)
 
 class RetrievalContext:
     """Mutable state container for the retrieval pipeline."""
-    def __init__(self, query_text: str, query_vector: List[float], limit: int, token_budget: int, config: Dict[str, Any] = None):
+    def __init__(self, query_text: str, query_vector: List[float], limit: int, token_budget: int, config: Dict[str, Any] = None, env: Optional['EnvironmentalContext'] = None):
         self.query_text = query_text
         self.query_vector = query_vector
         self.limit = limit
         self.token_budget = token_budget
         self.config = config or {}
+        self.env = env
         
         self.candidates: Dict[int, Dict[str, Any]] = {} # id -> memory_dict
         self.metrics: Dict[str, Any] = {} # telemetry
@@ -308,6 +310,17 @@ class BudgetHandler(RetrievalHandler):
                 })
                 context.consumed_tokens += chosen_tokens
 
+# --- Handler Registry ---
+# Maps string names to handler classes for config-driven pipelines
+HANDLER_REGISTRY = {
+    "anchoring": AnchoringDiscovery,
+    "vector": VectorDiscovery,
+    "graph_expansion": GraphExpansionDiscovery,
+    "intent": IntentRanker,
+    "scoring": ScoringRanker,
+    "budget": BudgetHandler
+}
+
 class Retriever:
     """RAG Engine: Handles vector search, importance-based ranking, and graph traversal."""
     
@@ -315,33 +328,52 @@ class Retriever:
         self.db = db
         self.graph = GraphQueryService(db)
         self.enrichment = enrichment
+        self.config = load_reverie_config()
         
-        # Default Pipelines
+        # Pipelines
         self.discovery_pipeline: List[RetrievalHandler] = []
         self.ranking_pipeline: List[RetrievalHandler] = []
         self.budget_pipeline: List[RetrievalHandler] = []
         
-        self._setup_default_pipelines()
+        self._setup_pipelines()
+
+    def _setup_pipelines(self):
+        """Initializes pipelines from config or defaults."""
+        retrieval_cfg = self.config.get("retrieval_pipeline", {})
+        
+        # 1. Discovery
+        discovery_names = retrieval_cfg.get("discovery")
+        if discovery_names:
+            for name in discovery_names:
+                if name in HANDLER_REGISTRY:
+                    self.register_handler(HANDLER_REGISTRY[name](), "discovery")
+        else:
+            # Default Discovery
+            self.discovery_pipeline = [AnchoringDiscovery(), VectorDiscovery()]
+            
+        # 2. Ranking & Expansion
+        ranking_names = retrieval_cfg.get("ranking")
+        if ranking_names:
+            for name in ranking_names:
+                if name in HANDLER_REGISTRY:
+                    self.register_handler(HANDLER_REGISTRY[name](), "ranking")
+        else:
+            # Default Ranking
+            self.ranking_pipeline = [IntentRanker(), GraphExpansionDiscovery(), ScoringRanker()]
+            
+        # 3. Budgeting
+        budget_names = retrieval_cfg.get("budget")
+        if budget_names:
+            for name in budget_names:
+                if name in HANDLER_REGISTRY:
+                    self.register_handler(HANDLER_REGISTRY[name](), "budget")
+        else:
+            # Default Budgeting
+            self.budget_pipeline = [BudgetHandler()]
 
     def _setup_default_pipelines(self):
-        """Initializes the standard ReverieCore retrieval flow."""
-        # 1. Discovery
-        self.discovery_pipeline = [
-            AnchoringDiscovery(),
-            VectorDiscovery()
-        ]
-        
-        # 2. Ranking & Expansion (Serial because expansion depends on discovery results)
-        self.ranking_pipeline = [
-            IntentRanker(),
-            GraphExpansionDiscovery(), # Technically discovery, but happens after initial set
-            ScoringRanker()
-        ]
-        
-        # 3. Budgeting & Selection
-        self.budget_pipeline = [
-            BudgetHandler()
-        ]
+        """DEPRECATED: Use _setup_pipelines instead."""
+        self._setup_pipelines()
 
     def register_handler(self, handler: RetrievalHandler, stage: str = "discovery"):
         """Allows external plugins to inject logic into the pipeline."""
@@ -422,7 +454,8 @@ class Retriever:
                importance_weight: Optional[float] = None,
                decay_weight: Optional[float] = None,
                allowed_owners: List[str] = None,
-               include_archived: bool = False) -> List[Dict[str, Any]]:
+               include_archived: bool = False,
+               env: Optional[Any] = None) -> List[Dict[str, Any]]:
         """
         Composable Pipeline Orchestrator:
         1. Initialize RetrievalContext.
@@ -439,7 +472,7 @@ class Retriever:
             "allowed_owners": allowed_owners,
             "include_archived": include_archived
         }
-        context = RetrievalContext(query_text, query_vector, limit, token_budget, config)
+        context = RetrievalContext(query_text, query_vector, limit, token_budget, config, env=env)
         
         # 2. Discovery Phase
         for handler in self.discovery_pipeline:
