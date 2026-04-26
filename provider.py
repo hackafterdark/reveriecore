@@ -318,13 +318,6 @@ class ReverieMemoryProvider(MemoryProvider):
                     importance_score=m_ctx.importance_score,
                     metadata=metadata
                 )
-
-
-
-
-
-
-
                 logger.info(f"Memory {dup_id} Canonicalized and Updated.")
                 return 
 

@@ -70,9 +70,12 @@ class AnchoringDiscovery(RetrievalHandler):
         if graph_anchored_ids:
             id_placeholders = ",".join(["?"] * len(graph_anchored_ids))
             query = f"SELECT id, content_full, content_abstract, token_count_full, token_count_abstract, importance_score, learned_at, expires_at, memory_type, metadata, guid FROM memories WHERE id IN ({id_placeholders}) AND status IN {status_filter}"
-            cursor.execute(query, tuple(graph_anchored_ids))
+            with tracer.start_as_current_span("reverie.retrieval.sql_query") as span:
+                span.set_attribute("db.statement", query)
+                cursor.execute(query, tuple(graph_anchored_ids))
+                rows = cursor.fetchall()
             
-            for row in cursor.fetchall():
+            for row in rows:
                 m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp, m_type, meta, guid = row
                 context.candidates[m_id] = {
                     "id": m_id, "content_full": c_f, "content_abstract": c_a,
@@ -113,10 +116,13 @@ class VectorDiscovery(RetrievalHandler):
                 WHERE v.embedding MATCH ? AND v.k = ? AND m.status IN {status_filter} {filter_clause}
                 ORDER BY v.distance ASC
             """
-            cursor.execute(v_query, v_params)
+            with tracer.start_as_current_span("reverie.retrieval.sql_query") as span:
+                span.set_attribute("db.statement", v_query)
+                cursor.execute(v_query, v_params)
+                rows = cursor.fetchall()
             
             count = 0
-            for row in cursor.fetchall():
+            for row in rows:
                 m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp, dist, m_type, meta, guid = row
                 similarity = 1.0 / (1.0 + dist)
                 
@@ -175,9 +181,12 @@ class GraphExpansionDiscovery(RetrievalHandler):
         if new_ids:
             id_placeholders = ",".join(["?"] * len(new_ids))
             fetch_query = f"SELECT id, content_full, content_abstract, token_count_full, token_count_abstract, importance_score, learned_at, expires_at, memory_type, metadata, guid FROM memories WHERE id IN ({id_placeholders}) AND status IN {status_filter}"
-            cursor.execute(fetch_query, tuple(new_ids))
+            with tracer.start_as_current_span("reverie.retrieval.sql_query") as span:
+                span.set_attribute("db.statement", fetch_query)
+                cursor.execute(fetch_query, tuple(new_ids))
+                rows = cursor.fetchall()
             
-            for row in cursor.fetchall():
+            for row in rows:
                 m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp, m_type, meta, guid = row
                 context.candidates[m_id] = {
                     "id": m_id, "content_full": c_f, "content_abstract": c_a,
@@ -553,8 +562,11 @@ class Retriever:
         
         duplicates = []
         try:
-            cursor.execute(v_query, v_params)
-            for row in cursor.fetchall():
+            with tracer.start_as_current_span("reverie.retrieval.sql_query") as span:
+                span.set_attribute("db.statement", v_query)
+                cursor.execute(v_query, v_params)
+                rows = cursor.fetchall()
+            for row in rows:
                 m_id, content, dist = row
                 # Convert distance to similarity (1.0 is exact match)
                 similarity = 1.0 / (1.0 + dist)

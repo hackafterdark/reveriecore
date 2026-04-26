@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 import uuid
 
+from .telemetry import get_tracer
+
+tracer = get_tracer(__name__)
 logger = logging.getLogger(__name__)
 
 class DatabaseManager:
@@ -129,18 +132,22 @@ class DatabaseManager:
 
     def purge_relations(self, memory_id: int):
         """Removes all triples derived from a specific memory ID (Idempotency Safeguard)."""
-        cursor = self.conn.cursor()
-        cursor.execute("DELETE FROM memory_relations WHERE evidence_memory_id = ?", (memory_id,))
-        self.conn.commit()
+        with tracer.start_as_current_span("reverie.db.sql_query") as span:
+            span.set_attribute("db.statement", "DELETE FROM memory_relations WHERE evidence_memory_id = ?")
+            cursor = self.conn.cursor()
+            cursor.execute("DELETE FROM memory_relations WHERE evidence_memory_id = ?", (memory_id,))
+            self.conn.commit()
         logger.debug(f"Purged relations for memory {memory_id}")
 
     def delete_memory(self, memory_id: int):
         """Atomically removes a memory and its vector index."""
         with self.write_lock() as cursor:
-            # memory_relations has FOREIGN KEY (evidence_memory_id) REFERENCES memories(id) ON DELETE CASCADE
-            # So relations will be cleaned up automatically.
-            cursor.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
-            cursor.execute("DELETE FROM memories_vec WHERE rowid = ?", (memory_id,))
+            with tracer.start_as_current_span("reverie.db.sql_query") as span:
+                span.set_attribute("db.statement", "DELETE FROM memories WHERE id = ?; DELETE FROM memories_vec WHERE rowid = ?")
+                # memory_relations has FOREIGN KEY (evidence_memory_id) REFERENCES memories(id) ON DELETE CASCADE
+                # So relations will be cleaned up automatically.
+                cursor.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+                cursor.execute("DELETE FROM memories_vec WHERE rowid = ?", (memory_id,))
         logger.info(f"Memory {memory_id} deleted successfully.")
 
     def update_access_timestamp(self, memory_ids: list[int]):
@@ -150,10 +157,10 @@ class DatabaseManager:
         try:
             with self.write_lock() as cursor:
                 placeholders = ",".join(["?"] * len(memory_ids))
-                cursor.execute(f"""
-                    UPDATE memories SET last_accessed_at = CURRENT_TIMESTAMP 
-                    WHERE id IN ({placeholders})
-                """, tuple(memory_ids))
+                query = f"UPDATE memories SET last_accessed_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders})"
+                with tracer.start_as_current_span("reverie.db.sql_query") as span:
+                    span.set_attribute("db.statement", query)
+                    cursor.execute(query, tuple(memory_ids))
             logger.debug(f"Updated last_accessed_at for {len(memory_ids)} memories.")
         except Exception as e:
             logger.warning(f"Failed to update access timestamps: {e}")
@@ -182,29 +189,37 @@ class DatabaseManager:
             params = [updates[k] for k in updates.keys()]
             params.append(memory_id)
             
-            cursor.execute(f"UPDATE memories SET {set_clause} WHERE id = ?", tuple(params))
+            query = f"UPDATE memories SET {set_clause} WHERE id = ?"
+            with tracer.start_as_current_span("reverie.db.sql_query") as span:
+                span.set_attribute("db.statement", query)
+                cursor.execute(query, tuple(params))
             
             # Check if the memory actually existed
             if cursor.rowcount == 0:
                 raise ValueError(f"Memory with ID {memory_id} not found.")
 
-            # sqlite-vec virtual tables do not support INSERT OR REPLACE.
-            # Must DELETE first, then INSERT for existing rows.
-            cursor.execute("DELETE FROM memories_vec WHERE rowid = ?", (memory_id,))
-            cursor.execute(
-                "INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)",
-                (memory_id, sqlite_vec.serialize_float32(embedding))
-            )
+            with tracer.start_as_current_span("reverie.db.sql_query") as span:
+                span.set_attribute("db.statement", "DELETE FROM memories_vec WHERE rowid = ?; INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)")
+                # sqlite-vec virtual tables do not support INSERT OR REPLACE.
+                # Must DELETE first, then INSERT for existing rows.
+                cursor.execute("DELETE FROM memories_vec WHERE rowid = ?", (memory_id,))
+                cursor.execute(
+                    "INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)",
+                    (memory_id, sqlite_vec.serialize_float32(embedding))
+                )
         logger.info(f"Memory {memory_id} updated successfully.")
 
     def get_memory(self, memory_id: int) -> Optional[dict]:
         """Fetches a single memory record by ID."""
-        cursor = self.conn.cursor()
-        cursor.execute("""
+        query = """
             SELECT id, content_full, content_abstract, importance_score, owner_id, memory_type, guid, status, learned_at, metadata
             FROM memories WHERE id = ?
-        """, (memory_id,))
-        row = cursor.fetchone()
+        """
+        with tracer.start_as_current_span("reverie.db.sql_query") as span:
+            span.set_attribute("db.statement", query)
+            cursor = self.conn.cursor()
+            cursor.execute(query, (memory_id,))
+            row = cursor.fetchone()
         if row:
             meta = row[9]
             if meta and isinstance(meta, str):
@@ -229,12 +244,15 @@ class DatabaseManager:
 
     def get_memory_by_guid(self, guid: str) -> Optional[dict]:
         """Fetches a single memory record by GUID."""
-        cursor = self.conn.cursor()
-        cursor.execute("""
+        query = """
             SELECT id, content_full, content_abstract, importance_score, owner_id, memory_type, guid, status, learned_at, metadata
             FROM memories WHERE guid = ?
-        """, (guid,))
-        row = cursor.fetchone()
+        """
+        with tracer.start_as_current_span("reverie.db.sql_query") as span:
+            span.set_attribute("db.statement", query)
+            cursor = self.conn.cursor()
+            cursor.execute(query, (guid,))
+            row = cursor.fetchone()
         if row:
             meta = row[9]
             if meta and isinstance(meta, str):
@@ -259,12 +277,15 @@ class DatabaseManager:
 
     def get_entity(self, entity_id: int) -> Optional[dict]:
         """Fetches a single entity record by ID."""
-        cursor = self.conn.cursor()
-        cursor.execute("""
+        query = """
             SELECT id, name, label, description, metadata, guid
             FROM entities WHERE id = ?
-        """, (entity_id,))
-        row = cursor.fetchone()
+        """
+        with tracer.start_as_current_span("reverie.db.sql_query") as span:
+            span.set_attribute("db.statement", query)
+            cursor = self.conn.cursor()
+            cursor.execute(query, (entity_id,))
+            row = cursor.fetchone()
         if row:
             return {
                 "id": row[0],
@@ -278,12 +299,15 @@ class DatabaseManager:
 
     def get_entity_by_guid(self, guid: str) -> Optional[dict]:
         """Fetches a single entity record by GUID."""
-        cursor = self.conn.cursor()
-        cursor.execute("""
+        query = """
             SELECT id, name, label, description, metadata, guid
             FROM entities WHERE guid = ?
-        """, (guid,))
-        row = cursor.fetchone()
+        """
+        with tracer.start_as_current_span("reverie.db.sql_query") as span:
+            span.set_attribute("db.statement", query)
+            cursor = self.conn.cursor()
+            cursor.execute(query, (guid,))
+            row = cursor.fetchone()
         if row:
             return {
                 "id": row[0],
@@ -297,60 +321,72 @@ class DatabaseManager:
 
     def get_relations_for_node(self, node_id: int, node_type: str = 'MEMORY') -> List[Dict]:
         """Fetches all relations where the node is either source or target."""
-        cursor = self.conn.cursor()
-        cursor.execute("""
+        query = """
             SELECT id, source_id, source_type, target_id, target_type, relation_type, confidence_score, metadata
             FROM memory_relations
             WHERE (source_id = ? AND source_type = ?) OR (target_id = ? AND target_type = ?)
-        """, (node_id, node_type, node_id, node_type))
-        results = []
-        for row in cursor.fetchall():
-            results.append({
-                "id": row[0],
-                "source_id": row[1],
-                "source_type": row[2],
-                "target_id": row[3],
-                "target_type": row[4],
-                "relation_type": row[5],
-                "confidence_score": row[6],
-                "metadata": row[7]
-            })
+        """
+        with tracer.start_as_current_span("reverie.db.sql_query") as span:
+            span.set_attribute("db.statement", query)
+            cursor = self.conn.cursor()
+            cursor.execute(query, (node_id, node_type, node_id, node_type))
+            results = []
+            for row in cursor.fetchall():
+                results.append({
+                    "id": row[0],
+                    "source_id": row[1],
+                    "source_type": row[2],
+                    "target_id": row[3],
+                    "target_type": row[4],
+                    "relation_type": row[5],
+                    "confidence_score": row[6],
+                    "metadata": row[7]
+                })
         return results
 
     def get_relations_by_evidence(self, memory_id: int) -> List[Dict]:
         """Fetches all relations where this memory provided the evidence (triples)."""
-        cursor = self.conn.cursor()
-        cursor.execute("""
+        query = """
             SELECT id, source_id, source_type, target_id, target_type, relation_type, confidence_score, metadata
             FROM memory_relations
             WHERE evidence_memory_id = ?
-        """, (memory_id,))
-        results = []
-        for row in cursor.fetchall():
-            results.append({
-                "id": row[0],
-                "source_id": row[1],
-                "source_type": row[2],
-                "target_id": row[3],
-                "target_type": row[4],
-                "relation_type": row[5],
-                "confidence_score": row[6],
-                "metadata": row[7]
-            })
+        """
+        with tracer.start_as_current_span("reverie.db.sql_query") as span:
+            span.set_attribute("db.statement", query)
+            cursor = self.conn.cursor()
+            cursor.execute(query, (memory_id,))
+            results = []
+            for row in cursor.fetchall():
+                results.append({
+                    "id": row[0],
+                    "source_id": row[1],
+                    "source_type": row[2],
+                    "target_id": row[3],
+                    "target_type": row[4],
+                    "relation_type": row[5],
+                    "confidence_score": row[6],
+                    "metadata": row[7]
+                })
         return results
 
     def get_or_create_entity(self, name: str, label: str, description: str = None) -> int:
         """Finds or creates an entity by canonical name with stable GUID."""
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT id FROM entities WHERE name = ?", (name,))
-        row = cursor.fetchone()
-        if row:
-            return row[0]
+        query = "SELECT id FROM entities WHERE name = ?"
+        with tracer.start_as_current_span("reverie.db.sql_query") as span:
+            span.set_attribute("db.statement", query)
+            cursor = self.conn.cursor()
+            cursor.execute(query, (name,))
+            row = cursor.fetchone()
+            if row:
+                return row[0]
         
         with self.write_lock() as cursor:
             # We generate a GUID for new entities to maintain cross-platform identity
             new_guid = str(uuid.uuid4())
-            cursor.execute("INSERT INTO entities (name, label, guid, description) VALUES (?, ?, ?, ?)", (name, label, new_guid, description))
+            query = "INSERT INTO entities (name, label, guid, description) VALUES (?, ?, ?, ?)"
+            with tracer.start_as_current_span("reverie.db.sql_query") as span:
+                span.set_attribute("db.statement", query)
+                cursor.execute(query, (name, label, new_guid, description))
             return cursor.lastrowid
 
     def get_cursor(self):
@@ -362,8 +398,6 @@ class DatabaseManager:
         Strict multi-tenant validation.
         """
         try:
-            cursor = self.conn.cursor()
-            # Check for CHILD_OF relation to an observation owned by owner_id
             query = """
                 SELECT COUNT(*) FROM memory_relations ma
                 JOIN memories m ON ma.target_id = m.id
@@ -371,9 +405,12 @@ class DatabaseManager:
                 AND ma.relation_type IN ('CHILD_OF', 'SUPERSEDES')
                 AND m.owner_id = ?
             """
-            cursor.execute(query, (memory_id, owner_id))
-            count = cursor.fetchone()[0]
-            return count > 0
+            with tracer.start_as_current_span("reverie.db.sql_query") as span:
+                span.set_attribute("db.statement", query)
+                cursor = self.conn.cursor()
+                cursor.execute(query, (memory_id, owner_id))
+                count = cursor.fetchone()[0]
+                return count > 0
         except Exception as e:
             logger.error(f"Provenance check failed: {e}")
             return False

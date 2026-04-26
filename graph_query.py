@@ -32,8 +32,11 @@ class GraphQueryService:
         anchor_ids = set()
         if anchor_entities:
             placeholders = ",".join(["?"] * len(anchor_entities))
-            cursor.execute(f"SELECT id FROM entities WHERE name IN ({placeholders})", tuple(anchor_entities))
-            anchor_ids = {row[0] for row in cursor.fetchall()}
+            query = f"SELECT id FROM entities WHERE name IN ({placeholders})"
+            with tracer.start_as_current_span("reverie.graph.sql_query") as span:
+                span.set_attribute("db.statement", query)
+                cursor.execute(query, tuple(anchor_entities))
+                anchor_ids = {row[0] for row in cursor.fetchall()}
         
         # Track state: (node_id, node_type) -> max_score
         visited = {}
@@ -91,9 +94,10 @@ class GraphQueryService:
                 # Final LIMIT param (1)
                 params.append(per_node_limit)
 
-                cursor.execute(neighbors_query, tuple(params))
-
-                rows = cursor.fetchall()
+                with tracer.start_as_current_span("reverie.graph.sql_query") as span:
+                    span.set_attribute("db.statement", neighbors_query)
+                    cursor.execute(neighbors_query, tuple(params))
+                    rows = cursor.fetchall()
                 
                 for next_id, next_type, _, _, d_score, _ in rows:
                     # If not visited OR we found a higher-score path
@@ -132,8 +136,10 @@ class GraphQueryService:
             AND source_type = 'ENTITY'
             AND source_id IN (SELECT id FROM entities WHERE name IN ({placeholders}))
         """
-        cursor.execute(query, entity_names + entity_names)
-        return [row[0] for row in cursor.fetchall()]
+        with tracer.start_as_current_span("reverie.graph.sql_query") as span:
+            span.set_attribute("db.statement", query)
+            cursor.execute(query, entity_names + entity_names)
+            return [row[0] for row in cursor.fetchall()]
 
     def get_neighbors_summary(self, memory_id: int) -> str:
         """Returns a string summary of entities linked to a memory for context injection."""
@@ -145,8 +151,10 @@ class GraphQueryService:
             WHERE ma.source_id = ? AND ma.source_type = 'MEMORY'
         """
         try:
-            cursor.execute(query, (memory_id,))
-            rows = cursor.fetchall()
+            with tracer.start_as_current_span("reverie.graph.sql_query") as span:
+                span.set_attribute("db.statement", query)
+                cursor.execute(query, (memory_id,))
+                rows = cursor.fetchall()
             if not rows:
                 return ""
             

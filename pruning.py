@@ -8,7 +8,9 @@ import uuid
 from .database import DatabaseManager
 from .enrichment import EnrichmentService
 from .schemas import MemoryType
+from .telemetry import get_tracer
 
+tracer = get_tracer(__name__)
 logger = logging.getLogger(__name__)
 
 
@@ -107,8 +109,10 @@ class MesaService:
             
             age_filter = f"-{self.max_age_days} days"
             cursor = self.db.get_cursor()
-            cursor.execute(candidate_query, (self.importance_cutoff, age_filter, self.centrality_threshold))
-            candidate_ids = [row[0] for row in cursor.fetchall()]
+            with tracer.start_as_current_span("reverie.mesa.sql_query") as span:
+                span.set_attribute("db.statement", candidate_query)
+                cursor.execute(candidate_query, (self.importance_cutoff, age_filter, self.centrality_threshold))
+                candidate_ids = [row[0] for row in cursor.fetchall()]
             
             if not candidate_ids:
                 logger.debug("MesaService: No fragmentation detected.")
@@ -119,8 +123,11 @@ class MesaService:
                 return
 
             placeholders = ",".join(["?"] * len(candidate_ids))
+            update_query = f"UPDATE memories SET status = 'ARCHIVED' WHERE id IN ({placeholders})"
             with self.db.write_lock() as cursor:
-                cursor.execute(f"UPDATE memories SET status = 'ARCHIVED' WHERE id IN ({placeholders})", tuple(candidate_ids))
+                with tracer.start_as_current_span("reverie.mesa.sql_query") as span:
+                    span.set_attribute("db.statement", update_query)
+                    cursor.execute(update_query, tuple(candidate_ids))
             
             logger.info(f"MesaService: Archived {len(candidate_ids)} fragmented memories.")
 
@@ -159,8 +166,10 @@ class MesaService:
                 GROUP BY e.id
                 HAVING c_count >= ?
             """
-            cursor.execute(query, (age_filter, self.importance_cutoff, self.consolidation_threshold))
-            clusters = cursor.fetchall()
+            with tracer.start_as_current_span("reverie.mesa.sql_query") as span:
+                span.set_attribute("db.statement", query)
+                cursor.execute(query, (age_filter, self.importance_cutoff, self.consolidation_threshold))
+                clusters = cursor.fetchall()
 
             for ent_id, ent_name, count, member_ids_str in clusters:
                 logger.debug(f"Cluster: Entity {ent_name}, Count {count}")
@@ -179,9 +188,12 @@ class MesaService:
             id_to_text = {}
             with self.db.write_lock() as cursor:
                 placeholders = ",".join(["?"] * len(member_ids))
-                cursor.execute(f"SELECT id, content_full FROM memories WHERE id IN ({placeholders})", tuple(member_ids))
-                for mid, txt in cursor.fetchall():
-                    id_to_text[mid] = txt
+                fetch_query = f"SELECT id, content_full FROM memories WHERE id IN ({placeholders})"
+                with tracer.start_as_current_span("reverie.mesa.sql_query") as span:
+                    span.set_attribute("db.statement", fetch_query)
+                    cursor.execute(fetch_query, tuple(member_ids))
+                    for mid, txt in cursor.fetchall():
+                        id_to_text[mid] = txt
                 
             if not id_to_text:
                 return
@@ -196,19 +208,24 @@ class MesaService:
             with self.db.write_lock() as cursor:
                 # 3. Save Observation Anchor
                 metadata = json.dumps({"source_ids": member_ids, "consensus_target": entity_name})
-                cursor.execute("""
+                insert_query = """
                     INSERT INTO memories (
                         content_full, content_abstract, importance_score, memory_type, status, metadata, guid
                     ) VALUES (?, ?, ?, ?, 'ACTIVE', ?, ?)
-                """, (summary_text, profile, 4.5, "OBSERVATION", metadata, str(uuid.uuid4()))) # Force high importance for anchors
+                """
+                with tracer.start_as_current_span("reverie.mesa.sql_query") as span:
+                    span.set_attribute("db.statement", insert_query)
+                    cursor.execute(insert_query, (summary_text, profile, 4.5, "OBSERVATION", metadata, str(uuid.uuid4()))) # Force high importance for anchors
                 
                 anchor_id = cursor.lastrowid
                 
                 # Vector
                 vec = self.enrichment.generate_embedding(profile)
                 import sqlite_vec
-                cursor.execute("INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)", 
-                            (anchor_id, sqlite_vec.serialize_float32(vec)))
+                insert_vec_query = "INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)"
+                with tracer.start_as_current_span("reverie.mesa.sql_query") as span:
+                    span.set_attribute("db.statement", insert_vec_query)
+                    cursor.execute(insert_vec_query, (anchor_id, sqlite_vec.serialize_float32(vec)))
 
                 # 4. Link Hierarchy and Archive
                 for mid in member_ids:
@@ -225,17 +242,21 @@ class MesaService:
                     """, (anchor_id, mid))
                     
                     # Archive source
-                    cursor.execute("UPDATE memories SET status = 'ARCHIVED' WHERE id = ?", (mid,))
+                    with tracer.start_as_current_span("reverie.mesa.sql_query") as span:
+                        span.set_attribute("db.statement", "UPDATE memories SET status = 'ARCHIVED' WHERE id = ?")
+                        cursor.execute("UPDATE memories SET status = 'ARCHIVED' WHERE id = ?", (mid,))
                     
                     # Mirror-as-Code: Export child archive
                     if self.mirror:
                         self.mirror.export_node(mid)
 
                 # 5. Link anchor to entity
-                cursor.execute("""
-                    INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type)
-                    VALUES (?, 'MEMORY', ?, 'ENTITY', 'MENTIONS')
-                """, (anchor_id, entity_id))
+                with tracer.start_as_current_span("reverie.mesa.sql_query") as span:
+                    span.set_attribute("db.statement", "INSERT INTO memory_relations (...) VALUES (...)")
+                    cursor.execute("""
+                        INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type)
+                        VALUES (?, 'MEMORY', ?, 'ENTITY', 'MENTIONS')
+                    """, (anchor_id, entity_id))
 
             logger.info(f"MesaService: Hierarchical crystallization complete. Anchor: {anchor_id}")
 
@@ -258,18 +279,26 @@ class MesaService:
 
             with self.db.write_lock() as cursor:
                 # 1. Delete ARCHIVED memories older than 90 days
-                cursor.execute("DELETE FROM memories WHERE status = 'ARCHIVED' AND learned_at < datetime('now', '-90 days')")
-                purged_count = cursor.rowcount
+                purge_query = "DELETE FROM memories WHERE status = 'ARCHIVED' AND learned_at < datetime('now', '-90 days')"
+                with tracer.start_as_current_span("reverie.mesa.sql_query") as span:
+                    span.set_attribute("db.statement", purge_query)
+                    cursor.execute(purge_query)
+                    purged_count = cursor.rowcount
                 
                 # 2. Cleanup orphaned vector entries (if any)
-                cursor.execute("DELETE FROM memories_vec WHERE rowid NOT IN (SELECT id FROM memories)")
+                cleanup_query = "DELETE FROM memories_vec WHERE rowid NOT IN (SELECT id FROM memories)"
+                with tracer.start_as_current_span("reverie.mesa.sql_query") as span:
+                    span.set_attribute("db.statement", cleanup_query)
+                    cursor.execute(cleanup_query)
                 
                 logger.info(f"MesaService: Purged {purged_count} records.")
 
             # 3. VACUUM to reclaim space (MUST be outside transaction)
             try:
                 # Using a fresh cursor directly from connection to be safe
-                self.db.conn.execute("VACUUM")
+                with tracer.start_as_current_span("reverie.mesa.sql_query") as span:
+                    span.set_attribute("db.statement", "VACUUM")
+                    self.db.conn.execute("VACUUM")
                 logger.info("MesaService: VACUUM executed successfully.")
             except Exception as ev:
                 logger.warning(f"MesaService: VACUUM failed (likely concurrent access): {ev}")
