@@ -1,6 +1,7 @@
 import logging
 import time
 from typing import List, Dict, Any, Optional
+from .config import load_reverie_config
 from .retrieval_base import RetrievalHandler, RetrievalContext
 try:
     from flashrank import Ranker, RerankRequest
@@ -15,8 +16,17 @@ logger = logging.getLogger(__name__)
 class RerankerHandler(RetrievalHandler):
     """Stage D: Cross-Encoder Reranking using FlashRank"""
     
-    def __init__(self, model_name: str = "ms-marco-MiniLM-L-12-v2"):
-        self.model_name = model_name
+    def __init__(self, config: Optional[Dict[str, Any]] = None, **kwargs):
+        # 1. Resolve Configuration
+        self.config = config or load_reverie_config()
+        cfg = self.config
+        
+        self.model_name = cfg.get("reranking_model") or kwargs.get("model_name") or "ms-marco-MiniLM-L-12-v2"
+
+        # Defensive Check: Ensure we have strings
+        if not isinstance(self.model_name, str):
+            self.model_name = "ms-marco-MiniLM-L-12-v2"
+
         self._ranker = None
 
     @property
