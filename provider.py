@@ -78,6 +78,7 @@ class ReverieMemoryProvider(MemoryProvider):
         self._mirror_service = None
         self._is_shutdown = False
         self.env = None
+        self._last_retrieved_memories = []
 
     @property
     def name(self) -> str:
@@ -182,7 +183,7 @@ class ReverieMemoryProvider(MemoryProvider):
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Called by Hermes at the start of each turn with runtime context."""
         with tracer.start_as_current_span("reverie.provider.on_turn_start") as span:
-            span.set_attribute("turn_number", turn_number)
+            span.set_attribute("agent.turn_number", turn_number)
             self.remaining_tokens = kwargs.get("remaining_tokens") or self.remaining_tokens
         
         model_meta = kwargs.get("model_metadata") or {}
@@ -285,6 +286,7 @@ class ReverieMemoryProvider(MemoryProvider):
                                 env=self.env
                             )
                             if results:
+                                self._last_retrieved_memories = results
                                 lines = [f"- {r['content']}" for r in results]
                                 with self._prefetch_lock:
                                     self._prefetch_result = "\n".join(lines)
@@ -299,6 +301,19 @@ class ReverieMemoryProvider(MemoryProvider):
     def _save_memory_sync(self, user_content: str, assistant_content: str, session_id: str = "", metadata: dict = None) -> None:
         """Internal synchronous method to process and save memory."""
         with tracer.start_as_current_span("reverie.provider.save_memory_task") as span:
+            # 0. Measure Retrieval Utility (Level 4 Metric)
+            is_useful = False
+            if self._last_retrieved_memories:
+                assistant_words = set(assistant_content.lower().split())
+                for mem in self._last_retrieved_memories:
+                    # Strip the ID/Timestamp header for comparison
+                    content_body = mem.get("content", "").split("Context:\n")[-1].lower()
+                    overlap = [w for w in assistant_words if len(w) > 4 and w in content_body]
+                    if len(overlap) >= 3: # Threshold: 3 shared technical/rare words
+                        is_useful = True
+                        break
+            span.set_attribute("rag.retrieval.is_useful", is_useful)
+            
             try:
                 # For turn saving, we focus on the assistant's response or a composite
                 full_text = f"User: {user_content}\nAssistant: {assistant_content}"
@@ -491,7 +506,7 @@ class ReverieMemoryProvider(MemoryProvider):
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         with tracer.start_as_current_span("reverie.provider.handle_tool_call") as span:
-            span.set_attribute("tool_name", tool_name)
+            span.set_attribute("gen_ai.tool.name", tool_name)
             if tool_name == "recall_reverie":
                 return self._handle_recall_reverie(args.get("memory_id"))
 
