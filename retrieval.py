@@ -7,6 +7,11 @@ from abc import ABC, abstractmethod
 from .database import DatabaseManager
 from .graph_query import GraphQueryService
 from .config import load_reverie_config
+from opentelemetry import trace
+from opentelemetry.trace import StatusCode
+from .telemetry import get_tracer
+
+tracer = get_tracer(__name__)
 
 
 logger = logging.getLogger(__name__)
@@ -472,27 +477,55 @@ class Retriever:
             "allowed_owners": allowed_owners,
             "include_archived": include_archived
         }
-        context = RetrievalContext(query_text, query_vector, limit, token_budget, config, env=env)
-        
-        # 2. Discovery Phase
-        for handler in self.discovery_pipeline:
-            handler.process(context, self)
+        with tracer.start_as_current_span("reverie.retrieval") as span:
+            context = RetrievalContext(query_text, query_vector, limit, token_budget, config, env=env)
             
-        # 3. Ranking & Expansion Phase
-        for handler in self.ranking_pipeline:
-            handler.process(context, self)
+            # 2. Discovery Phase
+            for handler in self.discovery_pipeline:
+                with tracer.start_as_current_span(f"reverie.retrieval.handler.{handler.__class__.__name__}") as h_span:
+                    try:
+                        handler.process(context, self)
+                        h_span.set_attribute("retrieval.handler", handler.__class__.__name__)
+                        h_span.set_attribute("retrieval.candidate_count", len(context.candidates))
+                    except Exception as e:
+                        h_span.set_status(StatusCode.ERROR)
+                        h_span.record_exception(e)
+                        logger.error(f"Discovery handler {handler.__class__.__name__} failed: {e}")
+                
+            # 3. Ranking & Expansion Phase
+            for handler in self.ranking_pipeline:
+                with tracer.start_as_current_span(f"reverie.retrieval.handler.{handler.__class__.__name__}") as h_span:
+                    try:
+                        handler.process(context, self)
+                        h_span.set_attribute("retrieval.handler", handler.__class__.__name__)
+                        h_span.set_attribute("retrieval.candidate_count", len(context.candidates))
+                    except Exception as e:
+                        h_span.set_status(StatusCode.ERROR)
+                        h_span.record_exception(e)
+                        logger.error(f"Ranking handler {handler.__class__.__name__} failed: {e}")
+                
+            # 4. Budgeting Phase
+            for handler in self.budget_pipeline:
+                with tracer.start_as_current_span(f"reverie.retrieval.handler.{handler.__class__.__name__}") as h_span:
+                    try:
+                        handler.process(context, self)
+                        h_span.set_attribute("retrieval.handler", handler.__class__.__name__)
+                    except Exception as e:
+                        h_span.set_status(StatusCode.ERROR)
+                        h_span.record_exception(e)
+                        logger.error(f"Budgeting handler {handler.__class__.__name__} failed: {e}")
+                
+            span.set_attribute("retrieval.intent", context.intent)
+            span.set_attribute("retrieval.result_count", len(context.results))
+            span.set_attribute("retrieval.tokens_consumed", context.consumed_tokens)
             
-        # 4. Budgeting Phase
-        for handler in self.budget_pipeline:
-            handler.process(context, self)
+            logger.info(f"Retrieved {len(context.results)} memories ({context.consumed_tokens}/{token_budget} tokens). Intent: {context.intent}, Metrics: {context.metrics}")
             
-        logger.info(f"Retrieved {len(context.results)} memories ({context.consumed_tokens}/{token_budget} tokens). Intent: {context.intent}, Metrics: {context.metrics}")
-        
-        # 5. Update Access Timestamps
-        if context.results:
-            self.db.update_access_timestamp([r["id"] for r in context.results])
-            
-        return context.results
+            # 5. Update Access Timestamps
+            if context.results:
+                self.db.update_access_timestamp([r["id"] for r in context.results])
+                
+            return context.results
 
     def find_duplicates(self, query_vector: List[float], threshold: float = 0.95, 
                         allowed_owners: List[str] = None) -> List[Dict[str, Any]]:

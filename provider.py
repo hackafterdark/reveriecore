@@ -38,6 +38,7 @@ from .retrieval import Retriever
 from .schemas import MemoryType, RelationType
 from .pruning import MesaService
 from .mirror import MirrorService
+from .telemetry import initialize_telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,9 @@ class ReverieMemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         """Initialize models and database."""
         self._setup_logging()
+        
+        # 0. Initialize Telemetry
+        initialize_telemetry()
         
         from hermes_constants import get_hermes_home
         from .config import load_reverie_config

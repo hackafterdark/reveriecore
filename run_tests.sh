@@ -15,7 +15,14 @@ echo "Running ReverieCore Integration & Unit Tests"
 echo "================================================="
 
 # Ensure pytest-cov and anyio/asyncio plugins are present. This prevents CI failures.
-$VENV_PYTHON -m pip install -q pytest-cov pytest-asyncio anyio
+$VENV_PYTHON -m pip install -q pytest-cov pytest-asyncio anyio \
+    opentelemetry-api \
+    opentelemetry-sdk \
+    opentelemetry-exporter-otlp-proto-grpc \
+    opentelemetry-exporter-otlp-proto-http \
+    opentelemetry-semantic-conventions \
+    opentelemetry-instrumentation-logging \
+    pytest-mock
 
 # Run the pytest suite against the tests directory
 $VENV_PYTEST --cov=. --cov-report=term-missing --cov-report=html tests/

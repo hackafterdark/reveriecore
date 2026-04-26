@@ -1,30 +1,31 @@
 # 🌌 Reverie Core
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/hackafterdark/reveriecore)
+[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/hackafterdark/reveriecore)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Hermes-purple.svg)](https://github.com/hackafterdark/reveriecore)
 
-**Reverie Core** is an high-performance, intelligence-driven Retrieval-Augmented Generation (RAG) memory engine for the Hermes agent ecosystem. It transforms flat text memories into a structured, semantic knowledge graph.
+**Reverie Core** is a modular, high-performance RAG framework designed for the Hermes agent ecosystem. It transforms flat text memories into a structured, semantic knowledge graph using a decoupled pipeline architecture and industry-standard observability.
 
 ---
 
 ## ✨ Key Features
 
-- **🧠 Deep Semantic Enrichment**: Uses `BART-Large-MNLI` for zero-shot classification and importance scoring.
-- **⚡ Hybrid Graph-RAG Retrieval**: Combines `sqlite-vec` similarity search with **Bidirectional Graph Traversal** to find non-obvious context.
-- **🛡️ Hub Protection**: Intelligent per-node limits (10) to prevent popular entities from creating "noise" in your context window.
+- **🧠 Pipeline Orchestration**: Decoupled **Enrichment** and **Retrieval** pipelines that allow for composable handlers (Classification, Profiling, Ranking).
+- **⚡ Hybrid Graph-RAG**: Combines `sqlite-vec` similarity search with **Bidirectional Graph Traversal** to find non-obvious context.
+- **🛡️ Hub Protection**: Intelligent per-node limits to prevent popular entities from creating "noise" in your context window.
 - **🌐 Augmented Knowledge**: Automatically extracts canonical entities (Files, Tools, API nodes) and maps their relationships.
-- **🛡️ Namespace Isolation**: Robust identity model ensuring profile-based sandboxing and privacy.
-- **📦 Zero-Config Connectivity**: Dynamically discovers your LLM provider (Llama Swap, Ollama, OpenAI) from the Hermes `config.yaml`.
-- **🧹 Active Cognitive Maintenance**: Background `MesaService` automatically archives noise and sanitizes your context window.
+- **📊 Standardized Observability**: Full **OpenTelemetry** integration with GenAI semantic conventions for tracing and debugging.
+- **📦 Platform Portability**: Decoupled configuration via `reveriecore.yaml`, allowing Reverie to run in any Python environment.
+- **🧹 Active Maintenance**: Background `MesaService` automatically archives noise and sanitizes your context window.
 
 ---
 
 ## 🛠️ Technology Stack
 
-- **Core Intelligence**: `transformers` (BART), `sentence-transformers` (all-MiniLM-L6-v2)
-- **Database Engine**: `SQLite 3` with `sqlite-vec` extension
-- **Integration**: Python 3.x, Hermes Plugin Bridge
+- **Intelligence**: `transformers` (BART), `sentence-transformers` (all-MiniLM-L6-v2)
+- **Storage**: `SQLite 3` with `sqlite-vec` extension
+- **Observability**: `OpenTelemetry` (OTLP/gRPC)
+- **Integration**: Python 3.8+, Hermes Plugin Bridge
 
 ---
 
@@ -33,74 +34,81 @@
 ```bash
 reveriecore/
 ├── AGENT_DOCS/          # Detailed design and research documents
-├── PRD/                 # Product Requirements Document
+├── ADR/                 # Architectural Decision Records
 ├── tests/               # Unit and integration tests
-├── database.py          # SQLite & Vector initialization and management
-├── enrichment.py        # LLM-based extraction, scoring, and profiling
-├── graph_query.py       # Bidirectional traversal & Hub Protection logic
-├── provider.py          # Hermes Memory Provider implementation
-├── retrieval.py         # Hybrid search and re-ranking logic
-├── schemas.py           # Data models, Enums, and type definitions
-├── requirements.txt     # Python dependencies list
+├── config.py            # Priority-based configuration discovery
+├── database.py          # SQLite & Vector initialization
+├── enrichment.py        # Enrichment Pipeline & LLM Handlers
+├── graph_query.py       # Graph traversal & Hub Protection
+├── provider.py          # Hermes Plugin Entrypoint
+├── retrieval.py         # Retrieval Pipeline & Ranking Handlers
+├── telemetry.py         # OpenTelemetry infrastructure
+├── reveriecore.yaml     # Local framework configuration
 ```
 
 ---
 
 ## 🚀 Getting Started
 
-### 1. Requirements
-- Python 3.8+
-- SQLite 3 (with loadable extension support)
-
-### 2. Installation
-Clone this repository into your Hermes plugins directory:
+### 1. Installation
+Clone this repository into your Hermes plugins directory and install dependencies:
 
 ```bash
 git clone https://github.com/hackafterdark/reveriecore.git
 cd reveriecore
-pip install -r requirements.txt
+./run_tests.sh  # Automatically installs dependencies and verifies environment
 ```
 
-### 3. Verification
-You can monitor your Knowledge Graph health using the built-in status tool (no Hermes environment required):
-```bash
-python3 tests/graph_status.py
-```
+### 2. Configuration (`reveriecore.yaml`)
+Reverie Core now uses a standalone configuration file. The engine discovers configuration in this order:
+1.  **Hermes Pointer**: `memory.reveriecore_cfg` in `config.yaml`.
+2.  **Env Var**: `REVERIECORE_CONFIG` path override.
+3.  **Local Default**: `./reveriecore.yaml`.
 
-### 4. Configuration
-Reverie Core automatically reads your active LLM provider from `~/.hermes/config.yaml`. You can tune the **MesaService** maintenance engine by adding the following keys under the `memory:` section:
-
-#### Tuning Parameters
-| Parameter | Default | Description |
-| :--- | :--- | :--- |
-| `mesa_retention_days` | `14` | Days since last access before a memory is considered "stale". |
-| `mesa_importance_cutoff` | `4.0` | Minimum importance score required to remain "Active". |
-| `mesa_centrality_threshold` | `2` | Minimum graph edges required to prevent archiving. |
-| `mesa_interval_seconds` | `3600` | Frequency of maintenance checks in seconds. |
-| `mesa_purge_enabled` | `True` | Whether Tier 2 (Permanent Deletion) is active. |
-
-#### Example `config.yaml`
+#### Example `reveriecore.yaml`
 ```yaml
-memory:
-  provider: reveriecore
-  mesa_retention_days: 7       # Keep only the last week of low-signal data
-  mesa_importance_cutoff: 4.5  # High-bar for active memory
-  mesa_interval_seconds: 1800  # Check every 30 minutes
+# Pipeline Selection
+analysis_pipeline: ["HeuristicImportance", "SoulImportance"]
+retrieval_strategy: "HYBRID_GRAPH"
+
+# Maintenance (Mesa)
+mesa:
+  retention_days: 7
+  importance_cutoff: 4.5
+```
+
+---
+
+## 🔬 Observability (OpenTelemetry)
+
+Reverie Core is fully instrumented with **OpenTelemetry**. Every stage of the memory pipeline generates spans, allowing you to visualize exactly where latency or context-precision bottlenecks occur.
+
+### Viewing Traces
+The engine exports traces via OTLP to `localhost:4317`. To view them locally, you can use either Docker or the Jaeger **all-in-one binary** (highly recommended for simplicity):
+
+#### Option A: All-in-One Binary (Recommended)
+1. Download the [Jaeger binary](https://www.jaegertracing.io/download/) for your platform.
+2. Run the `jaeger-all-in-one` executable.
+3. Visit `http://localhost:16686`.
+
+#### Option B: Docker
+```bash
+docker run --rm -d --name jaeger -p 16686:16686 -p 4317:4317 jaegertracing/all-in-one:latest
 ```
 
 ---
 
 ## 📖 Documentation
 
-For deep dives into the architecture and theory behind Reverie Core, see the [AGENT_DOCS](AGENT_DOCS) directory:
+For deep dives into the architecture, see the [AGENT_DOCS](AGENT_DOCS) and [ADR](ADR) directories:
 
+- [**Telemetry & Tracing**](AGENT_DOCS/telemetry.md)
+- [ADR 006: Pipeline Architecture](ADR/006-reverie-framework-pipeline-architecture.md)
+- [ADR 008: OpenTelemetry Integration](ADR/008-opentelemetry-integration.md)
 - [Database Schema](AGENT_DOCS/db_schema.md)
-- [Retrieval Workflow](AGENT_DOCS/how_memory_retrieval_works.md)
 - [Knowledge Graph Mechanics](AGENT_DOCS/knowledge_graph_mechanics.md)
 - [Storage & Enrichment](AGENT_DOCS/how_memory_storage_works.md)
-- [Importance Score Mechanics](AGENT_DOCS/memory_importance_score.md)
 - [Active Maintenance (Mesa)](AGENT_DOCS/how_mesa_works.md)
-- [Product Requirements (PRD)](PRD/PRD.md)
 
 ---
 

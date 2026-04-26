@@ -15,6 +15,11 @@ from sentence_transformers import SentenceTransformer
 from .schemas import MemoryType, RelationType
 from .config import load_reverie_config
 from abc import ABC, abstractmethod
+from opentelemetry import trace
+from opentelemetry.trace import StatusCode
+from .telemetry import get_tracer
+
+tracer = get_tracer(__name__)
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +114,7 @@ Output ONLY the JSON: {{"importance": float, "confidence": float}}
             res = service.llm_client.call([
                 {"role": "system", "content": "You are a professional importance scoring utility."},
                 {"role": "user", "content": prompt + f"\n\nInformation: {context.text[:2000]}"}
-            ], json_mode=True)
+            ], json_mode=True, telemetry_metadata={"reverie.handler": "SoulImportance"})
             
             if res and "importance" in res:
                 conf = res.get("confidence", 0.9)
@@ -261,8 +266,17 @@ class InternalLLMClient:
 
 
 
-    def call(self, messages: List[Dict[str, str]], json_mode: bool = True) -> Optional[Dict[str, Any]]:
-        url = f"{self.base_url}/chat/completions"
+    def call(self, messages: List[Dict[str, str]], json_mode: bool = True, telemetry_metadata: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        with tracer.start_as_current_span("reverie.llm.call") as span:
+            span.set_attribute("gen_ai.system", self.base_url)
+            span.set_attribute("gen_ai.request.model", self.model_name)
+            span.set_attribute("gen_ai.operation.name", "chat")
+            
+            if telemetry_metadata:
+                for k, v in telemetry_metadata.items():
+                    span.set_attribute(k, v)
+
+            url = f"{self.base_url}/chat/completions"
         payload = {
             "model": self.model_name,
             "messages": messages,
@@ -286,9 +300,17 @@ class InternalLLMClient:
             with urllib.request.urlopen(req, timeout=45) as response:
                 result = json.loads(response.read().decode("utf-8"))
                 content = result["choices"][0]["message"]["content"]
+                
+                usage = result.get("usage", {})
+                if usage:
+                    span.set_attribute("gen_ai.usage.input_tokens", usage.get("prompt_tokens", 0))
+                    span.set_attribute("gen_ai.usage.output_tokens", usage.get("completion_tokens", 0))
+                
                 return json.loads(content) if json_mode else content
         except Exception as e:
             logger.error(f"InternalLLMClient.call FAILED: {e}")
+            span.set_status(StatusCode.ERROR)
+            span.record_exception(e)
             return None
 
 class EnrichmentService:
@@ -478,7 +500,7 @@ class EnrichmentService:
             summary = self.llm_client.call([
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": f"Memories to consolidate:\n{context}"}
-            ])
+            ], telemetry_metadata={"reverie.operation": "Synthesis"})
             
             return summary if isinstance(summary, str) else str(summary)
         except Exception as e:
@@ -538,29 +560,50 @@ class EnrichmentService:
 
     def enrich(self, text: str, env: Optional[Any] = None) -> EnrichmentContext:
         """Composable Pipeline Orchestrator for ingestion."""
-        context = EnrichmentContext(text, env=env)
-        
-        # 1. Analysis Stage (Classification & Importance)
-        for handler in self.analysis_pipeline:
-            handler.process(context, self)
-            # Early exit if a handler (like Heuristics or Soul) is highly confident
-            if context.metrics.get("stage_complete"):
-                break
+        with tracer.start_as_current_span("reverie.enrichment") as span:
+            context = EnrichmentContext(text, env=env)
             
-        # 2. Profiling Stage (Summary & Embedding)
-        for handler in self.profiling_pipeline:
-            handler.process(context, self)
+            # 1. Analysis Stage (Classification & Importance)
+            for handler in self.analysis_pipeline:
+                with tracer.start_as_current_span(f"reverie.enrichment.handler.{handler.__class__.__name__}") as h_span:
+                    try:
+                        handler.process(context, self)
+                        h_span.set_attribute("handler.name", handler.__class__.__name__)
+                        h_span.set_attribute("importance_score", context.importance_score)
+                    except Exception as e:
+                        h_span.set_status(StatusCode.ERROR)
+                        h_span.record_exception(e)
+                        logger.error(f"Handler {handler.__class__.__name__} failed: {e}")
+                        
+                # Early exit if a handler (like Heuristics or Soul) is highly confident
+                if context.metrics.get("stage_complete"):
+                    span.set_attribute("reverie.enrichment.early_exit", True)
+                    break
+                
+            # 2. Profiling Stage (Summary & Embedding)
+            for handler in self.profiling_pipeline:
+                with tracer.start_as_current_span(f"reverie.enrichment.handler.{handler.__class__.__name__}") as h_span:
+                    try:
+                        handler.process(context, self)
+                        h_span.set_attribute("handler.name", handler.__class__.__name__)
+                    except Exception as e:
+                        h_span.set_status(StatusCode.ERROR)
+                        h_span.record_exception(e)
+                        logger.error(f"Handler {handler.__class__.__name__} failed: {e}")
+                
+            # Suggested Expiration
+            if context.importance_score < 5.0:
+                from datetime import datetime, timedelta
+                context.expires_at = (datetime.utcnow() + timedelta(days=7)).isoformat()
+                
+            # Token Counts
+            context.token_count_full = self.count_tokens(context.text)
+            context.token_count_abstract = self.count_tokens(context.profile)
             
-        # Suggested Expiration
-        if context.importance_score < 5.0:
-            from datetime import datetime, timedelta
-            context.expires_at = (datetime.utcnow() + timedelta(days=7)).isoformat()
+            span.set_attribute("reverie.importance", context.importance_score)
+            span.set_attribute("reverie.memory_type", context.memory_type.value)
             
-        # Token Counts
-        context.token_count_full = self.count_tokens(context.text)
-        context.token_count_abstract = self.count_tokens(context.profile)
-        
-        return context
+            return context
 
     def calculate_importance(self, text: str) -> Dict[str, Any]:
         """Backward compatibility for legacy ingestion calls."""
@@ -609,7 +652,7 @@ class EnrichmentService:
             resp = self.llm_client.call([
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": query}
-            ])
+            ], telemetry_metadata={"reverie.operation": "QueryAnchoring"})
             
             return resp.get("anchors", [])
         except Exception as e:
@@ -622,104 +665,106 @@ class EnrichmentService:
         1. Extract & Resolve Entities.
         2. Extract & Validate Triples using ID references.
         """
-        try:
-            # Fail-fast connectivity check
-            if not self.llm_client.check_connectivity():
-                logger.warning(f"Extraction skipped for memory {memory_id}: LLM Provider unreachable.")
-                self.telemetry["failure"] += 1
-                return
+        with tracer.start_as_current_span("reverie.graph.extraction") as span:
+            span.set_attribute("memory_id", memory_id)
+            try:
+                # Fail-fast connectivity check
+                if not self.llm_client.check_connectivity():
+                    logger.warning(f"Extraction skipped for memory {memory_id}: LLM Provider unreachable.")
+                    self.telemetry["failure"] += 1
+                    span.set_attribute("extraction.skipped", "connectivity")
+                    return
 
-            # Pass 1: Extract Entities
-            entity_data = self.llm_client.call([
-                {"role": "system", "content": "Extract technical entities (Files, Functions, API Endpoints, Tools). Return JSON: {\"entities\": [{\"name\": \"...\", \"type\": \"...\", \"description\": \"...\"}]}"},
-                {"role": "user", "content": text}
-            ])
-            
-            if not entity_data or "entities" not in entity_data:
-                logger.debug(f"No entities extracted for memory {memory_id}")
-                self.telemetry["failure"] += 1
-                return
-
-            # Idempotency Safeguard: Purge old triples for this memory_id
-            db_manager.purge_relations(memory_id)
-
-            # Canonicalize & Store Entities
-            entity_map = {} # name -> id
-            cursor = db_manager.get_cursor()
-            for ent in entity_data["entities"]:
-                name = ent.get("name", "").strip()
-                if not name: continue
+                # Pass 1: Extract Entities
+                entity_data = self.llm_client.call([
+                    {"role": "system", "content": "Extract technical entities (Files, Functions, API Endpoints, Tools). Return JSON: {\"entities\": [{\"name\": \"...\", \"type\": \"...\", \"description\": \"...\"}]}"},
+                    {"role": "user", "content": text}
+                ], telemetry_metadata={"reverie.graph.stage": "EntityExtraction"})
                 
-                label = ent.get("type", "UNKNOWN").upper()
-                desc = ent.get("description", "")
-                
-                # Idempotent Insert (UPSERT pattern) with GUID generation
-                new_guid = str(uuid.uuid4())
-                cursor.execute("""
-                    INSERT INTO entities (name, label, description, guid) 
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(name) DO UPDATE SET 
-                        label=excluded.label, 
-                        description=COALESCE(excluded.description, description),
-                        guid=COALESCE(entities.guid, excluded.guid)
-                """, (name, label, desc, new_guid))
-                
-                cursor.execute("SELECT id FROM entities WHERE name = ?", (name,))
-                entity_map[name] = cursor.fetchone()[0]
-                
-                # Restore MENTIONS link (Memory -> Entity)
-                cursor.execute("""
-                    INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type, evidence_memory_id)
-                    VALUES (?, 'MEMORY', ?, 'ENTITY', 'MENTIONS', ?)
-                """, (memory_id, entity_map[name], memory_id))
+                if not entity_data or "entities" not in entity_data:
+                    logger.debug(f"No entities extracted for memory {memory_id}")
+                    self.telemetry["failure"] += 1
+                    return
 
+                # Idempotency Safeguard: Purge old triples for this memory_id
+                db_manager.purge_relations(memory_id)
 
-
-
-            db_manager.commit()
-
-            # Pass 2: Extract Triples using Entity names
-            # We ask for triples between identified entities
-            triple_prompt = f"Entities identified: {list(entity_map.keys())}. \n"
-            triple_prompt += f"Relationships allowed: {[t.value for t in RelationType]}. \n"
-            triple_prompt += f"Extract triples from text: {text}. \n"
-            triple_prompt += "Return JSON: {\"triples\": [{\"source\": \"name\", \"predicate\": \"TYPE\", \"target\": \"name\", \"confidence\": 0.9}]}"
-            
-            triple_data = self.llm_client.call([
-                {"role": "system", "content": "Extract relationships between technical entities. Use the provided list of entity names and allowed predicates."},
-                {"role": "user", "content": triple_prompt}
-            ])
-
-            if not triple_data or "triples" not in triple_data:
-                logger.debug(f"No triples extracted for memory {memory_id}")
-                self.telemetry["success"] += 1 # Partial success (entities saved)
-                return
-
-
-            # Store Validated Triples
-            valid_predicates = {t.value for t in RelationType}
-            success_triples = 0
-            for t in triple_data["triples"]:
-                src_name = t.get("source")
-                tgt_name = t.get("target")
-                pred = t.get("predicate", "").upper()
-                conf = t.get("confidence", 1.0)
-                
-                if src_name in entity_map and tgt_name in entity_map and pred in valid_predicates:
+                # Canonicalize & Store Entities
+                entity_map = {} # name -> id
+                cursor = db_manager.get_cursor()
+                for ent in entity_data["entities"]:
+                    name = ent.get("name", "").strip()
+                    if not name: continue
+                    
+                    label = ent.get("type", "UNKNOWN").upper()
+                    desc = ent.get("description", "")
+                    
+                    # Idempotent Insert (UPSERT pattern) with GUID generation
+                    new_guid = str(uuid.uuid4())
                     cursor.execute("""
-                        INSERT INTO memory_relations (
-                            source_id, source_type, target_id, target_type, relation_type, confidence_score, evidence_memory_id
-                        ) VALUES (?, 'ENTITY', ?, 'ENTITY', ?, ?, ?)
-                    """, (entity_map[src_name], entity_map[tgt_name], pred, conf, memory_id))
+                        INSERT INTO entities (name, label, description, guid) 
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(name) DO UPDATE SET 
+                            label=excluded.label, 
+                            description=COALESCE(excluded.description, description),
+                            guid=COALESCE(entities.guid, excluded.guid)
+                    """, (name, label, desc, new_guid))
+                    
+                    cursor.execute("SELECT id FROM entities WHERE name = ?", (name,))
+                    entity_map[name] = cursor.fetchone()[0]
+                    
+                    # Restore MENTIONS link (Memory -> Entity)
+                    cursor.execute("""
+                        INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type, evidence_memory_id)
+                        VALUES (?, 'MEMORY', ?, 'ENTITY', 'MENTIONS', ?)
+                    """, (memory_id, entity_map[name], memory_id))
 
-                    success_triples += 1
-                else:
-                    logger.debug(f"Rejected invalid triple for memory {memory_id}: {t}")
+                db_manager.commit()
 
-            db_manager.commit()
-            self.telemetry["success"] += 1
-            logger.info(f"Extraction turn complete for memory {memory_id}: {len(entity_map)} entities, {success_triples} triples. Total: {self.telemetry}")
+                # Pass 2: Extract Triples using Entity names
+                # We ask for triples between identified entities
+                triple_prompt = f"Entities identified: {list(entity_map.keys())}. \n"
+                triple_prompt += f"Relationships allowed: {[t.value for t in RelationType]}. \n"
+                triple_prompt += f"Extract triples from text: {text}. \n"
+                triple_prompt += "Return JSON: {\"triples\": [{\"source\": \"name\", \"predicate\": \"TYPE\", \"target\": \"name\", \"confidence\": 0.9}]}"
+                
+                triple_data = self.llm_client.call([
+                    {"role": "system", "content": "Extract relationships between technical entities. Use the provided list of entity names and allowed predicates."},
+                    {"role": "user", "content": triple_prompt}
+                ], telemetry_metadata={"reverie.graph.stage": "TripleExtraction"})
 
-        except Exception as e:
-            self.telemetry["failure"] += 1
-            logger.error(f"Graph extraction FAILED for memory {memory_id}: {e}\n{traceback.format_exc()}")
+                if not triple_data or "triples" not in triple_data:
+                    logger.debug(f"No triples extracted for memory {memory_id}")
+                    self.telemetry["success"] += 1 # Partial success (entities saved)
+                    return
+
+
+                # Store Validated Triples
+                valid_predicates = {t.value for t in RelationType}
+                success_triples = 0
+                for t in triple_data["triples"]:
+                    src_name = t.get("source")
+                    tgt_name = t.get("target")
+                    pred = t.get("predicate", "").upper()
+                    conf = t.get("confidence", 1.0)
+                    
+                    if src_name in entity_map and tgt_name in entity_map and pred in valid_predicates:
+                        cursor.execute("""
+                            INSERT INTO memory_relations (
+                                source_id, source_type, target_id, target_type, relation_type, confidence_score, evidence_memory_id
+                            ) VALUES (?, 'ENTITY', ?, 'ENTITY', ?, ?, ?)
+                        """, (entity_map[src_name], entity_map[tgt_name], pred, conf, memory_id))
+
+                        success_triples += 1
+                    else:
+                        logger.debug(f"Rejected invalid triple for memory {memory_id}: {t}")
+
+                db_manager.commit()
+                self.telemetry["success"] += 1
+                logger.info(f"Extraction turn complete for memory {memory_id}: {len(entity_map)} entities, {success_triples} triples. Total: {self.telemetry}")
+
+            except Exception as e:
+                self.telemetry["failure"] += 1
+                logger.error(f"Graph extraction FAILED for memory {memory_id}: {e}\n{traceback.format_exc()}")
+                span.set_status(StatusCode.ERROR)
+                span.record_exception(e)

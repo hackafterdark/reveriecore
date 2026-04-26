@@ -1,7 +1,7 @@
 # ADR 007: Decoupling Configuration via `reveriecore.yaml`
 
 ## Status
-Accepted
+Accepted (2026-04-25)
 
 ## Context
 ReverieCore was originally designed as a tight integration for the Hermes agent ecosystem. Consequently, its configuration was embedded within the Hermes `config.yaml` and passed through as runtime `kwargs` during plugin initialization.

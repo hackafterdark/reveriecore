@@ -1,7 +1,10 @@
 import logging
 import sqlite3
 from typing import List, Dict, Any, Set
+from opentelemetry import trace
+from .telemetry import get_tracer
 
+tracer = get_tracer(__name__)
 logger = logging.getLogger(__name__)
 
 class GraphQueryService:
@@ -17,8 +20,11 @@ class GraphQueryService:
         
         Returns: Dict[memory_id, max_discovery_score]
         """
-        if not start_memory_ids:
-            return {}
+        with tracer.start_as_current_span("reverie.graph.traversal") as span:
+            span.set_attribute("graph.start_nodes", len(start_memory_ids))
+            span.set_attribute("graph.depth", depth)
+            if not start_memory_ids:
+                return {}
             
         cursor = self.db.get_cursor()
 
@@ -107,7 +113,9 @@ class GraphQueryService:
 
     def get_memories_by_entities(self, entity_names: List[str]) -> List[int]:
         """Finds memories that are directly linked to any of the given entity names."""
-        if not entity_names: return []
+        with tracer.start_as_current_span("reverie.graph.entity_lookup") as span:
+            span.set_attribute("graph.entity_count", len(entity_names))
+            if not entity_names: return []
         cursor = self.db.get_cursor()
         placeholders = ','.join(['?'] * len(entity_names))
         
