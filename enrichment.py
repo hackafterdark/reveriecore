@@ -765,22 +765,28 @@ class EnrichmentService:
                     with db_manager.trace_query("INSERT", "entities", query_upsert, batch_size=len(entity_insert_data)) as sql_span:
                         cursor.executemany(query_upsert, entity_insert_data)
                     
-                    # Resolve IDs and create MENTIONS links in batch
-                    mentions_data = []
-                    for name, _, _, _ in entity_insert_data:
-                        query_get_id = "SELECT id FROM entities WHERE name = ?"
-                        with db_manager.trace_query("SELECT", "entities", query_get_id, (name,)) as sql_span:
-                            cursor.execute(query_get_id, (name,))
-                            ent_id = cursor.fetchone()[0]
-                        entity_map[name] = ent_id
-                        mentions_data.append((memory_id, ent_id, memory_id))
+                    # Resolve IDs in a single batch SELECT
+                    entity_names = [ent[0] for ent in entity_insert_data]
+                    if entity_names:
+                        placeholders = ", ".join(["?"] * len(entity_names))
+                        query_get_ids = f"SELECT id, name FROM entities WHERE name IN ({placeholders})"
+                        
+                        with db_manager.trace_query("SELECT", "entities", query_get_ids, tuple(entity_names), batch_size=len(entity_names)) as sql_span:
+                            cursor.execute(query_get_ids, tuple(entity_names))
+                            resolved_entities = cursor.fetchall()
 
-                    query_mentions = """
-                        INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type, evidence_memory_id)
-                        VALUES (?, 'MEMORY', ?, 'ENTITY', 'MENTIONS', ?)
-                    """
-                    with db_manager.trace_query("INSERT", "memory_relations", query_mentions, batch_size=len(mentions_data)) as sql_span:
-                        cursor.executemany(query_mentions, mentions_data)
+                        mentions_data = []
+                        for ent_id, name in resolved_entities:
+                            entity_map[name] = ent_id
+                            mentions_data.append((memory_id, ent_id, memory_id))
+
+                        if mentions_data:
+                            query_mentions = """
+                                INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type, evidence_memory_id)
+                                VALUES (?, 'MEMORY', ?, 'ENTITY', 'MENTIONS', ?)
+                            """
+                            with db_manager.trace_query("INSERT", "memory_relations", query_mentions, batch_size=len(mentions_data)) as sql_span:
+                                cursor.executemany(query_mentions, mentions_data)
 
                 # Pass 2: Extract Triples using Entity names
                 # We ask for triples between identified entities
