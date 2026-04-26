@@ -22,10 +22,10 @@
 
 ## 🛠️ Technology Stack
 
-- **Intelligence**: `transformers` (BART), `sentence-transformers` (all-MiniLM-L6-v2)
+- **Intelligence**: `transformers` (BART), `sentence-transformers` (all-MiniLM-L6-v2), `flashrank` (MiniLM reranker)
 - **Storage**: `SQLite 3` with `sqlite-vec` extension
 - **Observability**: `OpenTelemetry` (OTLP/gRPC)
-- **Integration**: Python 3.8+, Hermes Plugin Bridge
+- **Integration**: Python 3.11+, Hermes Plugin Bridge
 
 ---
 
@@ -40,10 +40,15 @@ reveriecore/
 ├── database.py          # SQLite & Vector initialization
 ├── enrichment.py        # Enrichment Pipeline & LLM Handlers
 ├── graph_query.py       # Graph traversal & Hub Protection
+├── mirror.py            # Lazy re-vectorization & persistent workers
 ├── provider.py          # Hermes Plugin Entrypoint
-├── retrieval.py         # Retrieval Pipeline & Ranking Handlers
+├── pruning.py           # Token budgeting & selection strategies
+├── reranking.py         # Cross-Encoder Reranking (Stage D)
+├── retrieval.py         # Hybrid-RAG Pipeline Orchestrator
+├── retrieval_base.py    # Shared types & circular import prevention
+├── schemas.py           # Standardized data models
 ├── telemetry.py         # OpenTelemetry infrastructure
-├── reveriecore.yaml     # Local framework configuration
+└── reveriecore.yaml     # Local framework configuration
 ```
 
 ---
@@ -109,6 +114,7 @@ For deep dives into the architecture, see the [AGENT_DOCS](AGENT_DOCS) and [ADR]
 - [Knowledge Graph Mechanics](AGENT_DOCS/knowledge_graph_mechanics.md)
 - [Storage & Enrichment](AGENT_DOCS/how_memory_storage_works.md)
 - [Active Maintenance (Mesa)](AGENT_DOCS/how_mesa_works.md)
+- [**Cross-Encoder Reranking**](AGENT_DOCS/reranker.md)
 
 ---
 
