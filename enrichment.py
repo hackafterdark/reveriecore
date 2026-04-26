@@ -735,35 +735,42 @@ class EnrichmentService:
 
                 # Canonicalize & Store Entities
                 entity_map = {} # name -> id
-                cursor = db_manager.get_cursor()
-                for ent in entity_data["entities"]:
-                    name = ent.get("name", "").strip()
-                    if not name: continue
-                    
-                    label = ent.get("type", "UNKNOWN").upper()
-                    desc = ent.get("description", "")
-                    
-                    # Idempotent Insert (UPSERT pattern) with GUID generation
-                    new_guid = str(uuid.uuid4())
-                    cursor.execute("""
-                        INSERT INTO entities (name, label, description, guid) 
-                        VALUES (?, ?, ?, ?)
-                        ON CONFLICT(name) DO UPDATE SET 
-                            label=excluded.label, 
-                            description=COALESCE(excluded.description, description),
-                            guid=COALESCE(entities.guid, excluded.guid)
-                    """, (name, label, desc, new_guid))
-                    
-                    cursor.execute("SELECT id FROM entities WHERE name = ?", (name,))
-                    entity_map[name] = cursor.fetchone()[0]
-                    
-                    # Restore MENTIONS link (Memory -> Entity)
-                    cursor.execute("""
-                        INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type, evidence_memory_id)
-                        VALUES (?, 'MEMORY', ?, 'ENTITY', 'MENTIONS', ?)
-                    """, (memory_id, entity_map[name], memory_id))
-
-                db_manager.commit()
+                with db_manager.write_lock() as cursor:
+                    for ent in entity_data["entities"]:
+                        name = ent.get("name", "").strip()
+                        if not name: continue
+                        
+                        label = ent.get("type", "UNKNOWN").upper()
+                        desc = ent.get("description", "")
+                        
+                        # Idempotent Insert (UPSERT pattern) with GUID generation
+                        new_guid = str(uuid.uuid4())
+                        query_upsert = """
+                            INSERT INTO entities (name, label, description, guid) 
+                            VALUES (?, ?, ?, ?)
+                            ON CONFLICT(name) DO UPDATE SET 
+                                label=excluded.label, 
+                                description=COALESCE(excluded.description, description),
+                                guid=COALESCE(entities.guid, excluded.guid)
+                        """
+                        with tracer.start_as_current_span("reverie.db.sql_query") as sql_span:
+                            sql_span.set_attribute("db.statement", query_upsert)
+                            cursor.execute(query_upsert, (name, label, desc, new_guid))
+                        
+                        query_get_id = "SELECT id FROM entities WHERE name = ?"
+                        with tracer.start_as_current_span("reverie.db.sql_query") as sql_span:
+                            sql_span.set_attribute("db.statement", query_get_id)
+                            cursor.execute(query_get_id, (name,))
+                            entity_map[name] = cursor.fetchone()[0]
+                        
+                        # Restore MENTIONS link (Memory -> Entity)
+                        query_mentions = """
+                            INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type, evidence_memory_id)
+                            VALUES (?, 'MEMORY', ?, 'ENTITY', 'MENTIONS', ?)
+                        """
+                        with tracer.start_as_current_span("reverie.db.sql_query") as sql_span:
+                            sql_span.set_attribute("db.statement", query_mentions)
+                            cursor.execute(query_mentions, (memory_id, entity_map[name], memory_id))
 
                 # Pass 2: Extract Triples using Entity names
                 # We ask for triples between identified entities
@@ -786,24 +793,27 @@ class EnrichmentService:
                 # Store Validated Triples
                 valid_predicates = {t.value for t in RelationType}
                 success_triples = 0
-                for t in triple_data["triples"]:
-                    src_name = t.get("source")
-                    tgt_name = t.get("target")
-                    pred = t.get("predicate", "").upper()
-                    conf = t.get("confidence", 1.0)
-                    
-                    if src_name in entity_map and tgt_name in entity_map and pred in valid_predicates:
-                        cursor.execute("""
-                            INSERT INTO memory_relations (
-                                source_id, source_type, target_id, target_type, relation_type, confidence_score, evidence_memory_id
-                            ) VALUES (?, 'ENTITY', ?, 'ENTITY', ?, ?, ?)
-                        """, (entity_map[src_name], entity_map[tgt_name], pred, conf, memory_id))
+                if triple_data.get("triples"):
+                    with db_manager.write_lock() as cursor:
+                        for t in triple_data["triples"]:
+                            src_name = t.get("source")
+                            tgt_name = t.get("target")
+                            pred = t.get("predicate", "").upper()
+                            conf = t.get("confidence", 1.0)
+                            
+                            if src_name in entity_map and tgt_name in entity_map and pred in valid_predicates:
+                                query_triple = """
+                                    INSERT INTO memory_relations (
+                                        source_id, source_type, target_id, target_type, relation_type, confidence_score, evidence_memory_id
+                                    ) VALUES (?, 'ENTITY', ?, 'ENTITY', ?, ?, ?)
+                                """
+                                with tracer.start_as_current_span("reverie.db.sql_query") as sql_span:
+                                    sql_span.set_attribute("db.statement", query_triple)
+                                    cursor.execute(query_triple, (entity_map[src_name], entity_map[tgt_name], pred, conf, memory_id))
 
-                        success_triples += 1
-                    else:
-                        logger.debug(f"Rejected invalid triple for memory {memory_id}: {t}")
-
-                db_manager.commit()
+                                success_triples += 1
+                            else:
+                                logger.debug(f"Rejected invalid triple for memory {memory_id}: {t}")
                 self.telemetry["success"] += 1
                 logger.info(f"Extraction turn complete for memory {memory_id}: {len(entity_map)} entities, {success_triples} triples. Total: {self.telemetry}")
 

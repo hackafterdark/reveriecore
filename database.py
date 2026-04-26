@@ -32,6 +32,7 @@ class DatabaseManager:
             
             # 1. Enable WAL mode for better concurrency in AaaS/Background environments
             self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.execute("PRAGMA synchronous=NORMAL;")
             
             # 2. Load sqlite-vec extension
             self.conn.enable_load_extension(True)
@@ -132,11 +133,10 @@ class DatabaseManager:
 
     def purge_relations(self, memory_id: int):
         """Removes all triples derived from a specific memory ID (Idempotency Safeguard)."""
-        with tracer.start_as_current_span("reverie.db.sql_query") as span:
-            span.set_attribute("db.statement", "DELETE FROM memory_relations WHERE evidence_memory_id = ?")
-            cursor = self.conn.cursor()
-            cursor.execute("DELETE FROM memory_relations WHERE evidence_memory_id = ?", (memory_id,))
-            self.conn.commit()
+        with self.write_lock() as cursor:
+            with tracer.start_as_current_span("reverie.db.sql_query") as span:
+                span.set_attribute("db.statement", "DELETE FROM memory_relations WHERE evidence_memory_id = ?")
+                cursor.execute("DELETE FROM memory_relations WHERE evidence_memory_id = ?", (memory_id,))
         logger.debug(f"Purged relations for memory {memory_id}")
 
     def delete_memory(self, memory_id: int):
