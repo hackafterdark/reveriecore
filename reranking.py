@@ -63,6 +63,11 @@ class RerankerHandler(RetrievalHandler):
             span.set_attribute("retrieval.handler", self.__class__.__name__)
             span.set_attribute("rag.retrieval.rerank_candidate_count", len(passages))
             
+            # Skip if no query text (e.g. vector-only search from some tests)
+            if not context.query_text:
+                logger.debug("No query text provided. Skipping rerank.")
+                return
+
             start_time = time.perf_counter()
             try:
                 # 1. Check for library availability

@@ -6,11 +6,11 @@ Retrieval in the Hermes Memory Plugin is a multi-step process that combines **Se
 
 When the Agent needs context, it doesn't just search for keywords; it asks a high-level question. Our Python plugin handles the heavy lifting of translating that question into the best possible memories.
 
-$$\text{Agent Needs Context} \xrightarrow{1. Query Formulation} \text{Agent} \xrightarrow{2. Call } \text{PYTHON PLUGIN} \xrightarrow[\text{3. Embed/Hybrid-Search}]{\text{Intelligence Layer}} \text{SQLite (sqlite-vec)} \xrightarrow{4. Context Injection} \text{Agent Window}$$
+$$\text{Agent Needs Context} \xrightarrow{1. Query Formulation} \text{Agent} \xrightarrow{2. Call } \text{PYTHON PLUGIN} \xrightarrow[\text{3. Vector/Graph Search}]{\text{Intelligence Layer}} \text{SQLite (sqlite-vec)} \xrightarrow{\text{4. Cross-Encoder Rerank}} \text{FlashRank} \xrightarrow{5. Context Injection} \text{Agent Window}$$
 
 ### 🛠️ The Implementation Bridge
 
-Our plugin implements the `retrieve_memories(query: str, limit: int)` function, which executes three primary jobs:
+Our plugin implements the `retrieve_memories(query: str, limit: int)` function, which executes four primary jobs:
 
 #### 1. Vectorization (The Map)
 The raw query is passed to `sentence-transformers`. This converts the agent's intent into a 384-dimension vector ($V_q$).
@@ -34,15 +34,22 @@ Similarity isn't everything. A memory that is semantically similar to your query
 - **Shared Entity Bridging**: This allows us to find Memory B if it shares an entity with Memory A, even if the query only semantically matched Memory A.
 - **Hub Protection**: To prevent popular entities (the "Hub Problem") from flooding results, we strictly limit traversal to the **top 10 associations per node**.
 
-#### 4. Intelligence-Based Re-ranking (The Filter)
+#### 4. Initial Heuristic Ranking (The Filter)
 Final ranking combines three signals:
 1. **Vector Similarity**: How well the text matches the query.
 2. **BART Importance**: A zero-shot score (0.0 to 10.0) for the fact's objective value.
 3. **Graph Proximity**: A boost for memories discovered via graph links.
 
-$$\text{Final Rank} = (W_1 \times \text{Similarity}) + (W_2 \times \frac{\text{Importance}}{10.0}) + \text{Graph Boost}$$
+$$\text{Initial Rank} = (W_1 \times \text{Similarity}) + (W_2 \times \frac{\text{Importance}}{10.0}) + \text{Graph Boost}$$
 
-#### 5. Structured Context Injection
+#### 5. Cross-Encoder Reranking (Stage D)
+For maximum precision, the top candidates from the initial ranking are passed to a **Cross-Encoder Reranker** (FlashRank).
+- **The Model**: `ms-marco-MiniLM-L-12-v2`.
+- **Deep Semantic Understanding**: Unlike vector search, the reranker processes the query and the full text of each memory together, identifying nuances that simple cosine similarity might miss.
+- **Score Override**: The reranker's output score replaces the initial heuristic score for the top 15-20 candidates.
+- **Provenance**: Candidates processed this way are marked with `source: reranked` in telemetry.
+
+#### 6. Structured Context Injection
 Every retrieved memory is injected into the agent's context window using a standardized, frontmatter-style Markdown header. This gives the model explicit metadata for temporal and semantic grounding.
 - **Categorical Labeling**: Numerical importance is mapped to labels: `Incidental` (0-3), `Relevant` (4-7), or `Critical` (8-10).
 - **Environmental Metadata**: Fields like `Location` are dynamically pulled from the memory's JSON `metadata` field.
@@ -57,13 +64,13 @@ Every retrieved memory is injected into the agent's context window using a stand
     The user prefers dark mode for all IDE components.
   ```
 
-#### 6. Agentic Drill-Down (Recall Reverie)
+#### 7. Agentic Drill-Down (Recall Reverie)
 While the system prioritizes high-level **Observation Anchors** in the initial search to save tokens, it never truly "forgets" the nuance.
 - **Discovery**: Search results for Observations automatically append a list of `[Nuanced Details available via recall_reverie for IDs: [102, 105, ...]]`.
 - **The Trigger**: The agent can explicitly use the `recall_reverie(memory_id)` tool to fetch specific "Gritty Details."
 - **Security Check**: Every drill-down call performs a strict provenance check to ensure the agent is authorized to view the fragment through its parent hierarchy.
 
-#### 7. Recency Protection (The Maintenance Signal)
+#### 8. Recency Protection (The Maintenance Signal)
 Every time a memory is successfully retrieved (or recalled via `recall_reverie`), the system updates its `last_accessed_at` timestamp. This acts as a "Stay Alive" signal to the **MesaService**, shielding active context from background pruning even if the memory has low objective importance.
 
 ### 📊 Context Hub: Adaptive Memory Budgeting

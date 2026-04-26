@@ -228,6 +228,9 @@ class ScoringRanker(RetrievalHandler):
 class BudgetHandler(RetrievalHandler):
     """Selects results and formats output strings."""
     def process(self, context: RetrievalContext, retriever: 'Retriever') -> None:
+        # 1. Fetch relevance floor from config (default to 0.2 if not set)
+        relevance_floor = context.config.get("relevance_floor", 0.2)
+
         # Sort candidates by score
         sorted_candidates = sorted(context.candidates.values(), key=lambda x: x["score"], reverse=True)
         
@@ -241,6 +244,10 @@ class BudgetHandler(RetrievalHandler):
         all_summaries = retriever.graph.get_neighbors_summaries(candidate_ids_for_summary)
         
         for c in sorted_candidates:
+            # 2. Apply Relevance Floor: Skip noise, even if it fits the budget
+            if c["score"] < relevance_floor:
+                continue
+                
             if len(context.results) >= context.limit:
                 break
                 
