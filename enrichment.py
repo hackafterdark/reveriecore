@@ -409,18 +409,28 @@ class EnrichmentService:
         # Identity / Soul Property
         self.soul_prompt = self._load_soul_prompt()
         
-        logger.info(f"EnrichmentService initialized. LLM Source: {self.llm_client.base_url}, Model: {self.llm_client.model_name}")
         if self.soul_prompt:
             logger.info("Soul-Aware Importance Scoring enabled.")
 
-    def _ensure_loaded(self, models: List[str]):
-        """Thread-safe lazy loader for specific model backends."""
+        # Eagerly load and warmup models for startup
+        self.initialize()
+
+    def initialize(self):
+        """Eagerly load and warmup all models during startup."""
+        with tracer.start_as_current_span("reverie.enrichment.initialize") as span:
+            logger.info("Initializing EnrichmentService models...")
+            self._load_models()
+            self.warmup()
+            logger.info("EnrichmentService initialization complete.")
+
+    def _load_models(self):
+        """Thread-safe eager loader for all model backends."""
         with self._init_lock:
-            if "embedding" in models and self.embedding_model is None:
+            if self.embedding_model is None:
                 logger.info(f"Loading embedding model: {self.embedding_model_name}...")
                 self.embedding_model = SentenceTransformer(self.embedding_model_name, device="cpu")
 
-            if "summarizer" in models and self.summarizer is None:
+            if self.summarizer is None:
                 logger.info(f"Loading summarization model: {self.summarization_model_name}...")
                 self.summarizer_tokenizer = AutoTokenizer.from_pretrained(self.summarization_model_name)
                 self.summarizer = AutoModelForSeq2SeqLM.from_pretrained(
@@ -428,7 +438,7 @@ class EnrichmentService:
                     low_cpu_mem_usage=False
                 ).to("cpu")
 
-            if "classifier" in models and self.classifier_model is None:
+            if self.classifier_model is None:
                 logger.info(f"Loading zero-shot classifier: {self.classifier_model_name}...")
                 self.classifier_tokenizer = AutoTokenizer.from_pretrained(self.classifier_model_name, use_fast=False)
                 self.classifier_model = AutoModelForSequenceClassification.from_pretrained(
@@ -436,6 +446,40 @@ class EnrichmentService:
                     low_cpu_mem_usage=False
                 ).to("cpu")
                 logger.info("mDeBERTa Classifier loaded successfully (Entailment-Logic).")
+
+    def warmup(self):
+        """Perform dummy inference to force PyTorch graph compilation and memory allocation."""
+        with tracer.start_as_current_span("reverie.enrichment.warmup") as span:
+            logger.info("Warming up models...")
+            
+            # 1. Warmup Embedding
+            if self.embedding_model:
+                logger.info(f"Warming up Embedding model ({self.embedding_model_name})...")
+                self.embedding_model.encode(["warmup"], show_progress_bar=False)
+                logger.info(f"Model {self.embedding_model_name} warmed and ready.")
+            
+            # 2. Warmup Summarizer
+            if self.summarizer and self.summarizer_tokenizer:
+                logger.info(f"Warming up Summarization model ({self.summarization_model_name})...")
+                inputs = self.summarizer_tokenizer("warmup text for graph compilation", return_tensors="pt")
+                self.summarizer.generate(inputs["input_ids"], max_length=5)
+                logger.info(f"Model {self.summarization_model_name} warmed and ready.")
+                
+            # 3. Warmup Classifier
+            if self.classifier_model and self.classifier_tokenizer:
+                logger.info(f"Warming up Classifier model ({self.classifier_model_name})...")
+                self._zero_shot_classify("warmup text for classification", ["fact", "noise"])
+                logger.info(f"Model {self.classifier_model_name} warmed and ready.")
+
+    def _ensure_loaded(self, models: List[str]):
+        """Fallback lazy loader (now largely redundant due to eager initialization)."""
+        # Quick check if everything is already there
+        if "embedding" in models and self.embedding_model is None:
+            self._load_models()
+        elif "summarizer" in models and self.summarizer is None:
+            self._load_models()
+        elif "classifier" in models and self.classifier_model is None:
+            self._load_models()
 
     def generate_embedding(self, text: str) -> List[float]:
         try:
