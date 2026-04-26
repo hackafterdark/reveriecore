@@ -23,6 +23,7 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-http",
     "opentelemetry-semantic-conventions",
     "opentelemetry-instrumentation-logging",
+    "flashrank",
 ]
 
 [project.optional-dependencies]

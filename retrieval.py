@@ -10,40 +10,13 @@ from .config import load_reverie_config
 from opentelemetry import trace
 from opentelemetry.trace import StatusCode
 from .telemetry import get_tracer
+from .reranking import RerankerHandler
 
 tracer = get_tracer(__name__)
 
 
 logger = logging.getLogger(__name__)
-
-class RetrievalContext:
-    """Mutable state container for the retrieval pipeline."""
-    def __init__(self, query_text: str, query_vector: List[float], limit: int, token_budget: int, config: Dict[str, Any] = None, env: Optional['EnvironmentalContext'] = None):
-        self.query_text = query_text
-        self.query_vector = query_vector
-        self.limit = limit
-        self.token_budget = token_budget
-        self.config = config or {}
-        self.env = env
-        
-        self.candidates: Dict[int, Dict[str, Any]] = {} # id -> memory_dict
-        self.metrics: Dict[str, Any] = {} # telemetry
-        self.weights: Dict[str, float] = {"similarity": 0.5, "importance": 0.3, "decay": 0.2}
-        self.intent: str = "Exploration"
-        self.consumed_tokens: int = 0
-        self.results: List[Dict[str, Any]] = []
-        self.is_fresh: bool = False
-        self.anchors: List[str] = []
-
-    @property
-    def remaining_budget(self) -> int:
-        return self.token_budget - self.consumed_tokens
-
-class RetrievalHandler(ABC):
-    """Abstract base class for all retrieval pipeline handlers."""
-    @abstractmethod
-    def process(self, context: RetrievalContext, retriever: 'Retriever') -> None:
-        pass
+from .retrieval_base import RetrievalContext, RetrievalHandler
 
 class AnchoringDiscovery(RetrievalHandler):
     """Stage A: Semantic Anchoring (Graph-First)"""
@@ -127,7 +100,7 @@ class VectorDiscovery(RetrievalHandler):
                 
                 # Telemetry for Precision Histogram
                 with tracer.start_as_current_span("reverie.retrieval.precision_log") as p_span:
-                    p_span.set_attribute("rag.retrieval.score", similarity)
+                    p_span.set_attribute("retrieval.score", similarity)
                     p_span.set_attribute("memory.id", m_id)
                     # Add content snippet for visual debugging in Jaeger
                     p_span.set_attribute("memory.content_snippet", (c_a or c_f)[:200])
@@ -343,6 +316,7 @@ HANDLER_REGISTRY = {
     "graph_expansion": GraphExpansionDiscovery,
     "intent": IntentRanker,
     "scoring": ScoringRanker,
+    "rerank": RerankerHandler,
     "budget": BudgetHandler
 }
 
@@ -384,7 +358,7 @@ class Retriever:
                     self.register_handler(HANDLER_REGISTRY[name](), "ranking")
         else:
             # Default Ranking
-            self.ranking_pipeline = [IntentRanker(), GraphExpansionDiscovery(), ScoringRanker()]
+            self.ranking_pipeline = [IntentRanker(), GraphExpansionDiscovery(), ScoringRanker(), RerankerHandler()]
             
         # 3. Budgeting
         budget_names = retrieval_cfg.get("budget")
@@ -498,7 +472,7 @@ class Retriever:
             "include_archived": include_archived
         }
         with tracer.start_as_current_span("reverie.retrieval") as span:
-            span.set_attribute("rag.retrieval.query", query_text)
+            span.set_attribute("retrieval.query", query_text)
             span.set_attribute("agent.context.token_budget_allocated", token_budget)
             context = RetrievalContext(query_text, query_vector, limit, token_budget, config, env=env)
             
@@ -507,8 +481,8 @@ class Retriever:
                 with tracer.start_as_current_span(f"reverie.retrieval.handler.{handler.__class__.__name__}") as h_span:
                     try:
                         handler.process(context, self)
-                        h_span.set_attribute("rag.retrieval.handler", handler.__class__.__name__)
-                        h_span.set_attribute("rag.retrieval.candidate_count", len(context.candidates))
+                        h_span.set_attribute("retrieval.handler", handler.__class__.__name__)
+                        h_span.set_attribute("retrieval.candidate_count", len(context.candidates))
                     except Exception as e:
                         h_span.set_status(StatusCode.ERROR)
                         h_span.record_exception(e)
@@ -519,8 +493,8 @@ class Retriever:
                 with tracer.start_as_current_span(f"reverie.retrieval.handler.{handler.__class__.__name__}") as h_span:
                     try:
                         handler.process(context, self)
-                        h_span.set_attribute("rag.retrieval.handler", handler.__class__.__name__)
-                        h_span.set_attribute("rag.retrieval.candidate_count", len(context.candidates))
+                        h_span.set_attribute("retrieval.handler", handler.__class__.__name__)
+                        h_span.set_attribute("retrieval.candidate_count", len(context.candidates))
                     except Exception as e:
                         h_span.set_status(StatusCode.ERROR)
                         h_span.record_exception(e)
@@ -531,20 +505,20 @@ class Retriever:
                 with tracer.start_as_current_span(f"reverie.retrieval.handler.{handler.__class__.__name__}") as h_span:
                     try:
                         handler.process(context, self)
-                        h_span.set_attribute("rag.retrieval.handler", handler.__class__.__name__)
+                        h_span.set_attribute("retrieval.handler", handler.__class__.__name__)
                     except Exception as e:
                         h_span.set_status(StatusCode.ERROR)
                         h_span.record_exception(e)
                         logger.error(f"Budgeting handler {handler.__class__.__name__} failed: {e}")
                 
-            span.set_attribute("rag.retrieval.intent", context.intent)
-            span.set_attribute("rag.retrieval.result_count", len(context.results))
+            span.set_attribute("retrieval.intent", context.intent)
+            span.set_attribute("retrieval.result_count", len(context.results))
             span.set_attribute("agent.context.token_budget_allocated", context.consumed_tokens)
             span.set_attribute("agent.context.token_budget_remaining", context.remaining_budget)
             
             if context.results:
                 avg_score = sum(r.get("score", 0.0) for r in context.results) / len(context.results)
-                span.set_attribute("rag.retrieval.score", avg_score)
+                span.set_attribute("retrieval.score", avg_score)
             
             logger.info(f"Retrieved {len(context.results)} memories ({context.consumed_tokens}/{token_budget} tokens). Intent: {context.intent}, Metrics: {context.metrics}")
             
