@@ -129,6 +129,11 @@ class DatabaseManager:
             )
         """)
         
+        # Optimized Indices for Graph Traversal (Bulk Expansion)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_relations_source ON memory_relations(source_id, source_type)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_relations_target ON memory_relations(target_id, target_type)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_relations_evidence ON memory_relations(evidence_memory_id)")
+        
         self.conn.commit()
 
     def purge_relations(self, memory_id: int):

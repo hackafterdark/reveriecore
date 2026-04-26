@@ -462,7 +462,7 @@ class EnrichmentService:
             if self.summarizer and self.summarizer_tokenizer:
                 logger.info(f"Warming up Summarization model ({self.summarization_model_name})...")
                 inputs = self.summarizer_tokenizer("warmup text for graph compilation", return_tensors="pt")
-                self.summarizer.generate(inputs["input_ids"], max_length=5)
+                self.summarizer.generate(inputs["input_ids"], max_length=5, min_length=1)
                 logger.info(f"Model {self.summarization_model_name} warmed and ready.")
                 
             # 3. Warmup Classifier
@@ -508,10 +508,12 @@ class EnrichmentService:
         try:
             self._ensure_loaded(["summarizer"])
             inputs = self.summarizer_tokenizer(text, return_tensors="pt", max_length=1024, truncation=True)
+            input_len = inputs["input_ids"].shape[1]
+            dynamic_min = max(2, min(10, input_len // 2))
             outputs = self.summarizer.generate(
                 inputs["input_ids"], 
                 max_length=150, 
-                min_length=10, 
+                min_length=dynamic_min, 
                 num_beams=2, 
                 early_stopping=True
             )
@@ -735,42 +737,45 @@ class EnrichmentService:
 
                 # Canonicalize & Store Entities
                 entity_map = {} # name -> id
+                entity_insert_data = []
+                for ent in entity_data["entities"]:
+                    name = ent.get("name", "").strip()
+                    if not name: continue
+                    label = ent.get("type", "UNKNOWN").upper()
+                    desc = ent.get("description", "")
+                    new_guid = str(uuid.uuid4())
+                    entity_insert_data.append((name, label, desc, new_guid))
+
                 with db_manager.write_lock() as cursor:
-                    for ent in entity_data["entities"]:
-                        name = ent.get("name", "").strip()
-                        if not name: continue
-                        
-                        label = ent.get("type", "UNKNOWN").upper()
-                        desc = ent.get("description", "")
-                        
-                        # Idempotent Insert (UPSERT pattern) with GUID generation
-                        new_guid = str(uuid.uuid4())
-                        query_upsert = """
-                            INSERT INTO entities (name, label, description, guid) 
-                            VALUES (?, ?, ?, ?)
-                            ON CONFLICT(name) DO UPDATE SET 
-                                label=excluded.label, 
-                                description=COALESCE(excluded.description, description),
-                                guid=COALESCE(entities.guid, excluded.guid)
-                        """
-                        with tracer.start_as_current_span("reverie.db.sql_query") as sql_span:
-                            sql_span.set_attribute("db.statement", query_upsert)
-                            cursor.execute(query_upsert, (name, label, desc, new_guid))
-                        
+                    # Idempotent Insert (UPSERT pattern) with GUID generation
+                    query_upsert = """
+                        INSERT INTO entities (name, label, description, guid) 
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(name) DO UPDATE SET 
+                            label=excluded.label, 
+                            description=COALESCE(excluded.description, description),
+                            guid=COALESCE(entities.guid, excluded.guid)
+                    """
+                    with tracer.start_as_current_span("reverie.db.sql_query") as sql_span:
+                        sql_span.set_attribute("db.statement", "reverie.graph.upsert_entities_batch")
+                        cursor.executemany(query_upsert, entity_insert_data)
+                    
+                    # Resolve IDs and create MENTIONS links in batch
+                    mentions_data = []
+                    for name, _, _, _ in entity_insert_data:
                         query_get_id = "SELECT id FROM entities WHERE name = ?"
-                        with tracer.start_as_current_span("reverie.db.sql_query") as sql_span:
-                            sql_span.set_attribute("db.statement", query_get_id)
-                            cursor.execute(query_get_id, (name,))
-                            entity_map[name] = cursor.fetchone()[0]
-                        
-                        # Restore MENTIONS link (Memory -> Entity)
-                        query_mentions = """
-                            INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type, evidence_memory_id)
-                            VALUES (?, 'MEMORY', ?, 'ENTITY', 'MENTIONS', ?)
-                        """
-                        with tracer.start_as_current_span("reverie.db.sql_query") as sql_span:
-                            sql_span.set_attribute("db.statement", query_mentions)
-                            cursor.execute(query_mentions, (memory_id, entity_map[name], memory_id))
+                        cursor.execute(query_get_id, (name,))
+                        ent_id = cursor.fetchone()[0]
+                        entity_map[name] = ent_id
+                        mentions_data.append((memory_id, ent_id, memory_id))
+
+                    query_mentions = """
+                        INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type, evidence_memory_id)
+                        VALUES (?, 'MEMORY', ?, 'ENTITY', 'MENTIONS', ?)
+                    """
+                    with tracer.start_as_current_span("reverie.db.sql_query") as sql_span:
+                        sql_span.set_attribute("db.statement", "reverie.graph.insert_mentions_batch")
+                        cursor.executemany(query_mentions, mentions_data)
 
                 # Pass 2: Extract Triples using Entity names
                 # We ask for triples between identified entities
@@ -792,29 +797,37 @@ class EnrichmentService:
 
                 # Store Validated Triples
                 valid_predicates = {t.value for t in RelationType}
-                success_triples = 0
+                triple_insert_data = []
                 if triple_data.get("triples"):
-                    with db_manager.write_lock() as cursor:
-                        for t in triple_data["triples"]:
-                            src_name = t.get("source")
-                            tgt_name = t.get("target")
-                            pred = t.get("predicate", "").upper()
-                            conf = t.get("confidence", 1.0)
+                    for t in triple_data["triples"]:
+                        src_name = t.get("source")
+                        tgt_name = t.get("target")
+                        pred = t.get("predicate", "").upper()
+                        conf = t.get("confidence", 1.0)
                             
-                            if src_name in entity_map and tgt_name in entity_map and pred in valid_predicates:
-                                query_triple = """
-                                    INSERT INTO memory_relations (
-                                        source_id, source_type, target_id, target_type, relation_type, confidence_score, evidence_memory_id
-                                    ) VALUES (?, 'ENTITY', ?, 'ENTITY', ?, ?, ?)
-                                """
-                                with tracer.start_as_current_span("reverie.db.sql_query") as sql_span:
-                                    sql_span.set_attribute("db.statement", query_triple)
-                                    cursor.execute(query_triple, (entity_map[src_name], entity_map[tgt_name], pred, conf, memory_id))
+                        if src_name in entity_map and tgt_name in entity_map and pred in valid_predicates:
+                            # Collect for batch insertion
+                            triple_insert_data.append((
+                                entity_map[src_name], 'ENTITY', 
+                                entity_map[tgt_name], 'ENTITY', 
+                                pred, conf, memory_id
+                            ))
 
-                                success_triples += 1
-                            else:
-                                logger.debug(f"Rejected invalid triple for memory {memory_id}: {t}")
-                self.telemetry["success"] += 1
+                        else:
+                            logger.debug(f"Rejected invalid triple for memory {memory_id}: {t}")
+                success_triples = len(triple_insert_data)
+                if triple_insert_data:
+                    with db_manager.write_lock() as cursor:
+                        query_triples = """
+                            INSERT INTO memory_relations (
+                                source_id, source_type, target_id, target_type, relation_type, confidence_score, evidence_memory_id
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """
+                        with tracer.start_as_current_span("reverie.db.sql_query") as sql_span:
+                            sql_span.set_attribute("db.statement", "reverie.graph.insert_triples_batch")
+                            cursor.executemany(query_triples, triple_insert_data)
+                    self.telemetry["success"] += 1
+                
                 logger.info(f"Extraction turn complete for memory {memory_id}: {len(entity_map)} entities, {success_triples} triples. Total: {self.telemetry}")
 
             except Exception as e:

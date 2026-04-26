@@ -126,6 +126,13 @@ class VectorDiscovery(RetrievalHandler):
                 m_id, c_f, c_a, tc_f, tc_a, imp, lat, exp, dist, m_type, meta, guid = row
                 similarity = 1.0 / (1.0 + dist)
                 
+                # Telemetry for Precision Histogram
+                with tracer.start_as_current_span("reverie.retrieval.precision_log") as p_span:
+                    p_span.set_attribute("retrieval.score", similarity)
+                    p_span.set_attribute("memory.id", m_id)
+                    # Add content snippet for visual debugging in Jaeger
+                    p_span.set_attribute("memory.content_snippet", (c_a or c_f)[:200])
+
                 # Precision Gate
                 if similarity < 0.45:
                     continue
@@ -254,6 +261,13 @@ class BudgetHandler(RetrievalHandler):
         
         strategy = context.config.get("strategy", "balanced")
         
+        # Pre-fetch all neighbor summaries for candidates that need them
+        candidate_ids_for_summary = [
+            c["id"] for c in sorted_candidates[:context.limit] 
+            if c["type"] == "OBSERVATION" or c["source"] in ["graph", "anchor"]
+        ]
+        all_summaries = retriever.graph.get_neighbors_summaries(candidate_ids_for_summary)
+        
         for c in sorted_candidates:
             if len(context.results) >= context.limit:
                 break
@@ -301,10 +315,8 @@ class BudgetHandler(RetrievalHandler):
                 indented_content = "  " + chosen_content.replace("\n", "\n  ")
                 display_content = header + indented_content
 
-                if c["type"] == "OBSERVATION" or c["source"] in ["graph", "anchor"]:
-                    neighbors_summary = retriever.graph.get_neighbors_summary(c["id"])
-                    if neighbors_summary:
-                        display_content += f"\n  {neighbors_summary.strip()}"
+                if c["id"] in all_summaries:
+                    display_content += f"\n  {all_summaries[c['id']].strip()}"
                     
                 # Hierarchical Discovery
                 if c["type"] == "OBSERVATION" and c.get("metadata"):
@@ -487,6 +499,7 @@ class Retriever:
             "include_archived": include_archived
         }
         with tracer.start_as_current_span("reverie.retrieval") as span:
+            span.set_attribute("retrieval.query", query_text)
             context = RetrievalContext(query_text, query_vector, limit, token_budget, config, env=env)
             
             # 2. Discovery Phase

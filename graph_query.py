@@ -26,7 +26,7 @@ class GraphQueryService:
             if not start_memory_ids:
                 return {}
             
-        cursor = self.db.get_cursor()
+            cursor = self.db.get_cursor()
 
         # Resolve anchor entities to IDs
         anchor_ids = set()
@@ -56,58 +56,84 @@ class GraphQueryService:
                 
             next_layer = []
             
-            for node_id, node_type in current_layer:
-                # anchor_id_placeholders for the CASE statement
+            # Batch process current_layer to respect SQLite parameter limits
+            BATCH_SIZE = 400 
+            for i in range(0, len(current_layer), BATCH_SIZE):
+                batch = current_layer[i:i+BATCH_SIZE]
+                
+                # Build current_layer VALUES clause
+                values_placeholders = ",".join(["(?, ?)"] * len(batch))
+                values_params = []
+                for nid, ntype in batch:
+                    values_params.extend([nid, ntype])
+                
                 anchor_list = list(anchor_ids) if anchor_ids else [-1]
-                placeholders = ",".join(["?"] * len(anchor_list))
-
-                # We select discovery_score to propagate confidence
-                neighbors_query = f"""
-                    SELECT 
-                        CASE WHEN source_id = ? AND source_type = ? THEN target_id ELSE source_id END as next_id,
-                        CASE WHEN source_id = ? AND source_type = ? THEN target_type ELSE source_type END as next_type,
-                        confidence_score,
-                        CASE WHEN (CASE WHEN source_id = ? AND source_type = ? THEN target_type ELSE source_type END) = 'ENTITY' THEN 1 ELSE 0 END as type_weight,
-                        CASE WHEN (CASE WHEN source_id = ? AND source_type = ? THEN target_id ELSE source_id END) IN ({placeholders}) 
-                             AND (CASE WHEN source_id = ? AND source_type = ? THEN target_type ELSE source_type END) = 'ENTITY'
-                             THEN 1 ELSE 0 END as is_anchor,
-                        id
-                    FROM memory_relations
-                    WHERE (source_id = ? AND source_type = ?) OR (target_id = ? AND target_type = ?)
+                anchor_placeholders = ",".join(["?"] * len(anchor_list))
+                
+                # Bulk Expansion Query:
+                # 1. Identifies all neighbors (forward and backward edges) for the batch
+                # 2. Ranks neighbors per source node using ROW_NUMBER()
+                # 3. Applies the per_node_limit in-database to manage memory
+                bulk_query = f"""
+                    WITH current_layer_nodes(node_id, node_type) AS (
+                        VALUES {values_placeholders}
+                    ),
+                    candidates AS (
+                        -- Forward edges: current_layer is source
+                        SELECT 
+                            r.target_id as next_id, r.target_type as next_type, r.confidence_score, r.id as rel_id,
+                            r.source_id, r.source_type
+                        FROM memory_relations r
+                        JOIN current_layer_nodes cl ON r.source_id = cl.node_id AND r.source_type = cl.node_type
+                        UNION ALL
+                        -- Backward edges: current_layer is target
+                        SELECT 
+                            r.source_id as next_id, r.source_type as next_type, r.confidence_score, r.id as rel_id,
+                            r.target_id as source_id, r.target_type as source_type
+                        FROM memory_relations r
+                        JOIN current_layer_nodes cl ON r.target_id = cl.node_id AND r.target_type = cl.node_type
+                    ),
+                    scored AS (
+                        SELECT 
+                            next_id, next_type, confidence_score, rel_id, source_id, source_type,
+                            CASE WHEN next_type = 'ENTITY' AND next_id IN ({anchor_placeholders}) THEN 1 ELSE 0 END as is_anchor
+                        FROM candidates
+                    ),
+                    ranked AS (
+                        SELECT 
+                            next_id, next_type, 
+                            (confidence_score * (1 + (is_anchor * ?))) as d_score,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY source_id, source_type 
+                                ORDER BY 
+                                    (CASE WHEN next_type = 'ENTITY' THEN 1 ELSE 0 END) DESC, 
+                                    (confidence_score * (1 + (is_anchor * ?))) DESC, 
+                                    rel_id ASC
+                            ) as rn
+                        FROM scored
+                    )
+                    SELECT next_id, next_type, d_score 
+                    FROM ranked 
+                    WHERE rn <= ?
+                    ORDER BY d_score DESC
                 """
-                neighbors_query = f"SELECT next_id, next_type, confidence_score, type_weight, (confidence_score * (1 + (is_anchor * ?))) as discovery_score, id FROM ({neighbors_query}) ORDER BY type_weight DESC, discovery_score DESC, id ASC LIMIT ?"
                 
-                # Parameter ordering: 1 (gravity), then inner query params, then 1 (limit)
-                params = [gravity] 
-                # Inner SELECT params (10 + len(anchor_list))
-                params.extend([
-                    node_id, node_type, node_id, node_type, # next_id, next_type
-                    node_id, node_type,                     # type_weight
-                    node_id, node_type,                     # is_anchor part 1
-                ])
-                params.extend(anchor_list)
-                params.extend([node_id, node_type])         # is_anchor part 2
+                # Parameters: values_params, anchor_list (x1), gravity (x2), per_node_limit
+                params = values_params + anchor_list + [gravity, gravity, per_node_limit]
                 
-                # WHERE clause params (4)
-                params.extend([node_id, node_type, node_id, node_type])
-                
-                # Final LIMIT param (1)
-                params.append(per_node_limit)
-
                 with tracer.start_as_current_span("reverie.graph.sql_query") as span:
-                    span.set_attribute("db.statement", neighbors_query)
-                    cursor.execute(neighbors_query, tuple(params))
+                    span.set_attribute("db.statement", "reverie.graph.bulk_expansion")
+                    span.set_attribute("graph.batch_size", len(batch))
+                    cursor.execute(bulk_query, tuple(params))
                     rows = cursor.fetchall()
                 
-                for next_id, next_type, _, _, d_score, _ in rows:
-                    # If not visited OR we found a higher-score path
-                    if (next_id, next_type) not in visited or d_score > visited[(next_id, next_type)]:
-
+                for next_id, next_type, d_score in rows:
+                    if (next_id, next_type) not in visited:
                         visited[(next_id, next_type)] = d_score
                         next_layer.append((next_id, next_type))
                         if next_type == 'MEMORY':
                             found_memories[next_id] = max(found_memories.get(next_id, 0), d_score)
-                            
+            
             current_layer = next_layer
             # Global cap
             if len(found_memories) >= 50:
@@ -120,46 +146,56 @@ class GraphQueryService:
         with tracer.start_as_current_span("reverie.graph.entity_lookup") as span:
             span.set_attribute("graph.entity_count", len(entity_names))
             if not entity_names: return []
-        cursor = self.db.get_cursor()
-        placeholders = ','.join(['?'] * len(entity_names))
-        
-        query = f"""
-            SELECT DISTINCT source_id 
-            FROM memory_relations 
-            WHERE source_type = 'MEMORY' 
-            AND target_type = 'ENTITY'
-            AND target_id IN (SELECT id FROM entities WHERE name IN ({placeholders}))
-            UNION
-            SELECT DISTINCT target_id
-            FROM memory_relations
-            WHERE target_type = 'MEMORY'
-            AND source_type = 'ENTITY'
-            AND source_id IN (SELECT id FROM entities WHERE name IN ({placeholders}))
-        """
-        with tracer.start_as_current_span("reverie.graph.sql_query") as span:
-            span.set_attribute("db.statement", query)
-            cursor.execute(query, entity_names + entity_names)
-            return [row[0] for row in cursor.fetchall()]
-
-    def get_neighbors_summary(self, memory_id: int) -> str:
-        """Returns a string summary of entities linked to a memory for context injection."""
-        cursor = self.db.get_cursor()
-        query = """
-            SELECT e.name, e.label, ma.relation_type 
-            FROM memory_relations ma
-            JOIN entities e ON ma.target_id = e.id AND ma.target_type = 'ENTITY'
-            WHERE ma.source_id = ? AND ma.source_type = 'MEMORY'
-        """
-        try:
+            cursor = self.db.get_cursor()
+            placeholders = ','.join(['?'] * len(entity_names))
+            
+            query = f"""
+                SELECT DISTINCT source_id 
+                FROM memory_relations 
+                WHERE source_type = 'MEMORY' 
+                AND target_type = 'ENTITY'
+                AND target_id IN (SELECT id FROM entities WHERE name IN ({placeholders}))
+                UNION
+                SELECT DISTINCT target_id
+                FROM memory_relations
+                WHERE target_type = 'MEMORY'
+                AND source_type = 'ENTITY'
+                AND source_id IN (SELECT id FROM entities WHERE name IN ({placeholders}))
+            """
             with tracer.start_as_current_span("reverie.graph.sql_query") as span:
                 span.set_attribute("db.statement", query)
-                cursor.execute(query, (memory_id,))
-                rows = cursor.fetchall()
-            if not rows:
-                return ""
+                cursor.execute(query, entity_names + entity_names)
+                return [row[0] for row in cursor.fetchall()]
+
+    def get_neighbors_summaries(self, memory_ids: List[int]) -> Dict[int, str]:
+        """Returns a mapping of memory_id -> neighbors summary string."""
+        if not memory_ids:
+            return {}
             
-            links = [f"[{r[1]}: {r[0]} ({r[2]})]" for r in rows]
-            return " Linked Entities: " + ", ".join(links)
-        except Exception as e:
-            logger.debug(f"Failed to fetch neighbors summary: {e}")
-            return ""
+        with tracer.start_as_current_span("reverie.graph.batch_summary") as span:
+            cursor = self.db.get_cursor()
+            placeholders = ",".join(["?"] * len(memory_ids))
+            query = f"""
+                SELECT ma.source_id, e.name, e.label, ma.relation_type 
+                FROM memory_relations ma
+                JOIN entities e ON ma.target_id = e.id AND ma.target_type = 'ENTITY'
+                WHERE ma.source_id IN ({placeholders}) AND ma.source_type = 'MEMORY'
+            """
+            
+            try:
+                with tracer.start_as_current_span("reverie.graph.sql_query") as sql_span:
+                    sql_span.set_attribute("db.statement", "reverie.graph.batch_summary_query")
+                    cursor.execute(query, tuple(memory_ids))
+                    rows = cursor.fetchall()
+                
+                # Group by source_id
+                grouped = {}
+                for mid, name, label, rel_type in rows:
+                    link = f"[{label}: {name} ({rel_type})]"
+                    grouped.setdefault(mid, []).append(link)
+                
+                # Format into strings
+                return {mid: " Linked Entities: " + ", ".join(links) for mid, links in grouped.items()}
+            except Exception as e:
+                logger.debug(f"Failed to fetch batch neighbors summary: {e}")
+                return {}
