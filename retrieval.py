@@ -70,9 +70,9 @@ class AnchoringDiscovery(RetrievalHandler):
         if graph_anchored_ids:
             id_placeholders = ",".join(["?"] * len(graph_anchored_ids))
             query = f"SELECT id, content_full, content_abstract, token_count_full, token_count_abstract, importance_score, learned_at, expires_at, memory_type, metadata, guid FROM memories WHERE id IN ({id_placeholders}) AND status IN {status_filter}"
-            with tracer.start_as_current_span("reverie.retrieval.sql_query") as span:
-                span.set_attribute("db.statement", query)
-                cursor.execute(query, tuple(graph_anchored_ids))
+            params = tuple(graph_anchored_ids)
+            with retriever.db.trace_query("SELECT", "memories", query, params) as span:
+                cursor.execute(query, params)
                 rows = cursor.fetchall()
             
             for row in rows:
@@ -116,8 +116,7 @@ class VectorDiscovery(RetrievalHandler):
                 WHERE v.embedding MATCH ? AND v.k = ? AND m.status IN {status_filter} {filter_clause}
                 ORDER BY v.distance ASC
             """
-            with tracer.start_as_current_span("reverie.retrieval.sql_query") as span:
-                span.set_attribute("db.statement", v_query)
+            with retriever.db.trace_query("SELECT", "memories", v_query, tuple(v_params)) as span:
                 cursor.execute(v_query, v_params)
                 rows = cursor.fetchall()
             
@@ -188,9 +187,9 @@ class GraphExpansionDiscovery(RetrievalHandler):
         if new_ids:
             id_placeholders = ",".join(["?"] * len(new_ids))
             fetch_query = f"SELECT id, content_full, content_abstract, token_count_full, token_count_abstract, importance_score, learned_at, expires_at, memory_type, metadata, guid FROM memories WHERE id IN ({id_placeholders}) AND status IN {status_filter}"
-            with tracer.start_as_current_span("reverie.retrieval.sql_query") as span:
-                span.set_attribute("db.statement", fetch_query)
-                cursor.execute(fetch_query, tuple(new_ids))
+            params = tuple(new_ids)
+            with retriever.db.trace_query("SELECT", "memories", fetch_query, params) as span:
+                cursor.execute(fetch_query, params)
                 rows = cursor.fetchall()
             
             for row in rows:
@@ -575,8 +574,7 @@ class Retriever:
         
         duplicates = []
         try:
-            with tracer.start_as_current_span("reverie.retrieval.sql_query") as span:
-                span.set_attribute("db.statement", v_query)
+            with self.db.trace_query("SELECT", "memories", v_query, tuple(v_params)) as span:
                 cursor.execute(v_query, v_params)
                 rows = cursor.fetchall()
             for row in rows:

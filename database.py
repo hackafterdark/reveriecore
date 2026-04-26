@@ -129,30 +129,53 @@ class DatabaseManager:
             )
         """)
         
-        # Optimized Indices for Graph Traversal (Bulk Expansion)
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_relations_source ON memory_relations(source_id, source_type)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_relations_target ON memory_relations(target_id, target_type)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_relations_evidence ON memory_relations(evidence_memory_id)")
-        
         self.conn.commit()
+
+    @contextmanager
+    def trace_query(self, operation: str, table: str, query: str, parameters: tuple = None, batch_size: int = None):
+        """Helper to start a span with OTel SQL semantic conventions."""
+        span_name = f"reverie.db.{operation.lower()}"
+        if table:
+            span_name += f".{table.lower()}"
+            
+        with tracer.start_as_current_span(span_name) as span:
+            span.set_attribute("db.system.name", "sqlite")
+            span.set_attribute("db.namespace", self.db_path)
+            span.set_attribute("db.operation.name", operation)
+            if table:
+                span.set_attribute("db.collection.name", table)
+            span.set_attribute("db.query.text", query)
+            if parameters:
+                for i, val in enumerate(parameters):
+                    # Redact or truncate large/binary parameters for readability and trace performance
+                    p_val = val
+                    if isinstance(val, (bytes, bytearray)):
+                        p_val = f"<BLOB: {len(val)} bytes>"
+                    elif isinstance(val, str) and len(val) > 1024:
+                        p_val = val[:1024] + "... [TRUNCATED]"
+                    
+                    span.set_attribute(f"db.query.parameter.{i}", str(p_val))
+            if batch_size:
+                span.set_attribute("db.operation.batch.size", batch_size)
+            yield span
 
     def purge_relations(self, memory_id: int):
         """Removes all triples derived from a specific memory ID (Idempotency Safeguard)."""
+        query = "DELETE FROM memory_relations WHERE evidence_memory_id = ?"
         with self.write_lock() as cursor:
-            with tracer.start_as_current_span("reverie.db.sql_query") as span:
-                span.set_attribute("db.statement", "DELETE FROM memory_relations WHERE evidence_memory_id = ?")
-                cursor.execute("DELETE FROM memory_relations WHERE evidence_memory_id = ?", (memory_id,))
+            with self.trace_query("DELETE", "memory_relations", query, (memory_id,)) as span:
+                cursor.execute(query, (memory_id,))
         logger.debug(f"Purged relations for memory {memory_id}")
 
     def delete_memory(self, memory_id: int):
         """Atomically removes a memory and its vector index."""
+        q1 = "DELETE FROM memories WHERE id = ?"
+        q2 = "DELETE FROM memories_vec WHERE rowid = ?"
         with self.write_lock() as cursor:
-            with tracer.start_as_current_span("reverie.db.sql_query") as span:
-                span.set_attribute("db.statement", "DELETE FROM memories WHERE id = ?; DELETE FROM memories_vec WHERE rowid = ?")
-                # memory_relations has FOREIGN KEY (evidence_memory_id) REFERENCES memories(id) ON DELETE CASCADE
-                # So relations will be cleaned up automatically.
-                cursor.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
-                cursor.execute("DELETE FROM memories_vec WHERE rowid = ?", (memory_id,))
+            with self.trace_query("DELETE", "memories", q1, (memory_id,)) as span:
+                cursor.execute(q1, (memory_id,))
+            with self.trace_query("DELETE", "memories_vec", q2, (memory_id,)) as span:
+                cursor.execute(q2, (memory_id,))
         logger.info(f"Memory {memory_id} deleted successfully.")
 
     def update_access_timestamp(self, memory_ids: list[int]):
@@ -163,8 +186,7 @@ class DatabaseManager:
             with self.write_lock() as cursor:
                 placeholders = ",".join(["?"] * len(memory_ids))
                 query = f"UPDATE memories SET last_accessed_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders})"
-                with tracer.start_as_current_span("reverie.db.sql_query") as span:
-                    span.set_attribute("db.statement", query)
+                with self.trace_query("UPDATE", "memories", query, tuple(memory_ids), batch_size=len(memory_ids)) as span:
                     cursor.execute(query, tuple(memory_ids))
             logger.debug(f"Updated last_accessed_at for {len(memory_ids)} memories.")
         except Exception as e:
@@ -195,22 +217,21 @@ class DatabaseManager:
             params.append(memory_id)
             
             query = f"UPDATE memories SET {set_clause} WHERE id = ?"
-            with tracer.start_as_current_span("reverie.db.sql_query") as span:
-                span.set_attribute("db.statement", query)
+            with self.trace_query("UPDATE", "memories", query, tuple(params)) as span:
                 cursor.execute(query, tuple(params))
             
             # Check if the memory actually existed
             if cursor.rowcount == 0:
                 raise ValueError(f"Memory with ID {memory_id} not found.")
 
-            with tracer.start_as_current_span("reverie.db.sql_query") as span:
-                span.set_attribute("db.statement", "DELETE FROM memories_vec WHERE rowid = ?; INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)")
-                # sqlite-vec virtual tables do not support INSERT OR REPLACE.
-                # Must DELETE first, then INSERT for existing rows.
+            with self.trace_query("DELETE", "memories_vec", "DELETE FROM memories_vec WHERE rowid = ?", (memory_id,)) as span:
                 cursor.execute("DELETE FROM memories_vec WHERE rowid = ?", (memory_id,))
+            
+            vec_blob = sqlite_vec.serialize_float32(embedding)
+            with self.trace_query("INSERT", "memories_vec", "INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)", (memory_id, "BLOB")) as span:
                 cursor.execute(
                     "INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)",
-                    (memory_id, sqlite_vec.serialize_float32(embedding))
+                    (memory_id, vec_blob)
                 )
         logger.info(f"Memory {memory_id} updated successfully.")
 
@@ -220,8 +241,7 @@ class DatabaseManager:
             SELECT id, content_full, content_abstract, importance_score, owner_id, memory_type, guid, status, learned_at, metadata
             FROM memories WHERE id = ?
         """
-        with tracer.start_as_current_span("reverie.db.sql_query") as span:
-            span.set_attribute("db.statement", query)
+        with self.trace_query("SELECT", "memories", query, (memory_id,)) as span:
             cursor = self.conn.cursor()
             cursor.execute(query, (memory_id,))
             row = cursor.fetchone()
@@ -253,8 +273,7 @@ class DatabaseManager:
             SELECT id, content_full, content_abstract, importance_score, owner_id, memory_type, guid, status, learned_at, metadata
             FROM memories WHERE guid = ?
         """
-        with tracer.start_as_current_span("reverie.db.sql_query") as span:
-            span.set_attribute("db.statement", query)
+        with self.trace_query("SELECT", "memories", query, (guid,)) as span:
             cursor = self.conn.cursor()
             cursor.execute(query, (guid,))
             row = cursor.fetchone()
@@ -286,8 +305,7 @@ class DatabaseManager:
             SELECT id, name, label, description, metadata, guid
             FROM entities WHERE id = ?
         """
-        with tracer.start_as_current_span("reverie.db.sql_query") as span:
-            span.set_attribute("db.statement", query)
+        with self.trace_query("SELECT", "entities", query, (entity_id,)) as span:
             cursor = self.conn.cursor()
             cursor.execute(query, (entity_id,))
             row = cursor.fetchone()
@@ -308,8 +326,7 @@ class DatabaseManager:
             SELECT id, name, label, description, metadata, guid
             FROM entities WHERE guid = ?
         """
-        with tracer.start_as_current_span("reverie.db.sql_query") as span:
-            span.set_attribute("db.statement", query)
+        with self.trace_query("SELECT", "entities", query, (guid,)) as span:
             cursor = self.conn.cursor()
             cursor.execute(query, (guid,))
             row = cursor.fetchone()
@@ -331,10 +348,10 @@ class DatabaseManager:
             FROM memory_relations
             WHERE (source_id = ? AND source_type = ?) OR (target_id = ? AND target_type = ?)
         """
-        with tracer.start_as_current_span("reverie.db.sql_query") as span:
-            span.set_attribute("db.statement", query)
+        params = (node_id, node_type, node_id, node_type)
+        with self.trace_query("SELECT", "memory_relations", query, params) as span:
             cursor = self.conn.cursor()
-            cursor.execute(query, (node_id, node_type, node_id, node_type))
+            cursor.execute(query, params)
             results = []
             for row in cursor.fetchall():
                 results.append({
@@ -356,8 +373,7 @@ class DatabaseManager:
             FROM memory_relations
             WHERE evidence_memory_id = ?
         """
-        with tracer.start_as_current_span("reverie.db.sql_query") as span:
-            span.set_attribute("db.statement", query)
+        with self.trace_query("SELECT", "memory_relations", query, (memory_id,)) as span:
             cursor = self.conn.cursor()
             cursor.execute(query, (memory_id,))
             results = []
@@ -377,8 +393,7 @@ class DatabaseManager:
     def get_or_create_entity(self, name: str, label: str, description: str = None) -> int:
         """Finds or creates an entity by canonical name with stable GUID."""
         query = "SELECT id FROM entities WHERE name = ?"
-        with tracer.start_as_current_span("reverie.db.sql_query") as span:
-            span.set_attribute("db.statement", query)
+        with self.trace_query("SELECT", "entities", query, (name,)) as span:
             cursor = self.conn.cursor()
             cursor.execute(query, (name,))
             row = cursor.fetchone()
@@ -389,9 +404,9 @@ class DatabaseManager:
             # We generate a GUID for new entities to maintain cross-platform identity
             new_guid = str(uuid.uuid4())
             query = "INSERT INTO entities (name, label, guid, description) VALUES (?, ?, ?, ?)"
-            with tracer.start_as_current_span("reverie.db.sql_query") as span:
-                span.set_attribute("db.statement", query)
-                cursor.execute(query, (name, label, new_guid, description))
+            params = (name, label, new_guid, description)
+            with self.trace_query("INSERT", "entities", query, params) as span:
+                cursor.execute(query, params)
             return cursor.lastrowid
 
     def get_cursor(self):
@@ -410,10 +425,10 @@ class DatabaseManager:
                 AND ma.relation_type IN ('CHILD_OF', 'SUPERSEDES')
                 AND m.owner_id = ?
             """
-            with tracer.start_as_current_span("reverie.db.sql_query") as span:
-                span.set_attribute("db.statement", query)
+            params = (memory_id, owner_id)
+            with self.trace_query("SELECT", "memory_relations", query, params) as span:
                 cursor = self.conn.cursor()
-                cursor.execute(query, (memory_id, owner_id))
+                cursor.execute(query, params)
                 count = cursor.fetchone()[0]
                 return count > 0
         except Exception as e:

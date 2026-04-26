@@ -38,8 +38,11 @@ from .retrieval import Retriever
 from .schemas import MemoryType, RelationType
 from .pruning import MesaService
 from .mirror import MirrorService
-from .telemetry import initialize_telemetry
+from opentelemetry import trace, context
+from opentelemetry.trace import StatusCode
+from .telemetry import initialize_telemetry, get_tracer
 
+tracer = get_tracer(__name__)
 logger = logging.getLogger(__name__)
 
 class ReverieMemoryProvider(MemoryProvider):
@@ -86,77 +89,87 @@ class ReverieMemoryProvider(MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         """Initialize models and database."""
-        self._setup_logging()
-        
-        # 0. Initialize Telemetry
-        initialize_telemetry()
-        
-        from hermes_constants import get_hermes_home
-        from .config import load_reverie_config
-        
-        # Load ReverieCore specific config
-        self.config = load_reverie_config()
-        settings = self.config.get("settings", {})
-        
-        # Database is pinned to the preferred .hermes directory
-        db_path = get_hermes_home() / "reveriecore.db"
-        
-        # Identity Context (Provenance via Author/Actor, Scoping via Owner)
-        self.session_id = session_id
-        self.author_id = settings.get("user_identity") or kwargs.get("user_id") or kwargs.get("user_identity") or "USER"
-        self.owner_id = kwargs.get("agent_identity") or "PERSONAL_WORKSPACE"
-        self.actor_id = "REVERIE_SYNC_SERVICE"
-        self.workspace = kwargs.get("agent_workspace") or "UNKNOWN_WORKSPACE"
-        self.agent_context = kwargs.get("agent_context") or "primary"
-        
         try:
-            self._db = DatabaseManager(str(db_path))
-            self._enrichment = EnrichmentService()
-            # Restore knowledge graph anchoring by passing enrichment to Retriever
-            self._retriever = Retriever(self._db, enrichment=self._enrichment)
+            self._setup_logging()
             
-            # Capture memory_char_limit if passed from config (prioritize reveriecore.yaml)
-            self.memory_char_limit = int(settings.get("memory_char_limit", kwargs.get("memory_char_limit", self.memory_char_limit)))
+            # 0. Initialize Telemetry
+            initialize_telemetry()
             
-            # Register for automatic cleanup on exit
-            atexit.register(self.shutdown)
+            from hermes_constants import get_hermes_home
+            from .config import load_reverie_config
             
-            # Initialize Mesa Maintenance Service
-            # Pull thresholds from config/kwargs with defaults
-            c_thresh = kwargs.get("mesa_centrality_threshold", 2)
-            a_days = kwargs.get("mesa_retention_days", 14)
-            i_cutoff = kwargs.get("mesa_importance_cutoff", 4.0)
-            interval = kwargs.get("mesa_interval_seconds", 3600)
+            # Load ReverieCore specific config
+            self.config = load_reverie_config()
+            settings = self.config.get("settings", {})
             
-            # Initialize MirrorService (Memory-as-Code)
-            archive_path = get_hermes_home() / "reverie_archive"
-            self._mirror_service = MirrorService(self._db, self._enrichment, archive_root=archive_path)
-            self._mirror_service.start()
+            # Database is pinned to the preferred .hermes directory
+            db_path = get_hermes_home() / "reveriecore.db"
             
-            self._mesa_service = MesaService(
-                self._db, 
-                self._enrichment,
-                mirror=self._mirror_service,
-                centrality_threshold=int(c_thresh),
-                age_days=int(a_days),
-                importance_cutoff=float(i_cutoff),
-                interval_seconds=int(interval)
-            )
-            self._mesa_service.start()
+            # Identity Context (Provenance via Author/Actor, Scoping via Owner)
+            self.session_id = session_id
+            self.author_id = settings.get("user_identity") or kwargs.get("user_id") or kwargs.get("user_identity") or "USER"
+            self.owner_id = kwargs.get("agent_identity") or "PERSONAL_WORKSPACE"
+            self.actor_id = "REVERIE_SYNC_SERVICE"
+            self.workspace = kwargs.get("agent_workspace") or "UNKNOWN_WORKSPACE"
+            self.agent_context = kwargs.get("agent_context") or "primary"
             
-            # Initial Environmental Context
-            from .config import EnvironmentalContext
-            self.env = EnvironmentalContext(
-                user_id=self.author_id,
-                agent_id=self.owner_id,
-                session_id=self.session_id,
-                remaining_tokens=self.remaining_tokens,
-                total_context=self.total_context
-            )
-            
-            logger.info(f"ReverieCore initialized for {self.author_id} in {self.owner_id} (Actor: {self.actor_id})")
+            try:
+                self._db = DatabaseManager(str(db_path))
+                self._enrichment = EnrichmentService()
+                # Restore knowledge graph anchoring by passing enrichment to Retriever
+                self._retriever = Retriever(self._db, enrichment=self._enrichment)
+                
+                # Capture memory_char_limit if passed from config (prioritize reveriecore.yaml)
+                self.memory_char_limit = int(settings.get("memory_char_limit", kwargs.get("memory_char_limit", self.memory_char_limit)))
+                
+                # Register for automatic cleanup on exit
+                atexit.register(self.shutdown)
+                
+                # Initialize Mesa Maintenance Service
+                # Pull thresholds from config/kwargs with defaults
+                c_thresh = kwargs.get("mesa_centrality_threshold", 2)
+                a_days = kwargs.get("mesa_retention_days", 14)
+                i_cutoff = kwargs.get("mesa_importance_cutoff", 4.0)
+                interval = kwargs.get("mesa_interval_seconds", 3600)
+                
+                # Initialize MirrorService (Memory-as-Code)
+                archive_path = get_hermes_home() / "reverie_archive"
+                self._mirror_service = MirrorService(self._db, self._enrichment, archive_root=archive_path)
+                self._mirror_service.start()
+                
+                self._mesa_service = MesaService(
+                    self._db, 
+                    self._enrichment,
+                    mirror=self._mirror_service,
+                    centrality_threshold=int(c_thresh),
+                    age_days=int(a_days),
+                    importance_cutoff=float(i_cutoff),
+                    interval_seconds=int(interval)
+                )
+                self._mesa_service.start()
+                
+                # Initial Environmental Context
+                from .config import EnvironmentalContext
+                self.env = EnvironmentalContext(
+                    user_id=self.author_id,
+                    agent_id=self.owner_id,
+                    session_id=self.session_id,
+                    remaining_tokens=self.remaining_tokens,
+                    total_context=self.total_context
+                )
+                
+                logger.info(f"ReverieCore initialized for {self.author_id} in {self.owner_id} (Actor: {self.actor_id})")
+            except Exception as e:
+                logger.error(f"ReverieCore initialization failed during sub-service startup: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                raise
         except Exception as e:
-            logger.error(f"ReverieCore failed to initialize: {e}")
+            # Emergency fallback: write to a file we know we can find
+            with open("/tmp/reverie_startup_error.log", "a") as f:
+                import traceback
+                f.write(f"\nFATAL STARTUP ERROR: {e}\n{traceback.format_exc()}\n")
+            raise
 
     def system_prompt_block(self) -> str:
         return (
@@ -168,7 +181,9 @@ class ReverieMemoryProvider(MemoryProvider):
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Called by Hermes at the start of each turn with runtime context."""
-        self.remaining_tokens = kwargs.get("remaining_tokens") or self.remaining_tokens
+        with tracer.start_as_current_span("reverie.provider.on_turn_start") as span:
+            span.set_attribute("turn_number", turn_number)
+            self.remaining_tokens = kwargs.get("remaining_tokens") or self.remaining_tokens
         
         model_meta = kwargs.get("model_metadata") or {}
         if model_meta:
@@ -227,147 +242,159 @@ class ReverieMemoryProvider(MemoryProvider):
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Returns the result of the last queued prefetch."""
-        if self._prefetch_thread and self._prefetch_thread.is_alive():
-            self._prefetch_thread.join(timeout=2.0)
-            
-        with self._prefetch_lock:
-            result = self._prefetch_result
-            self._prefetch_result = ""
-            
-        if not result:
-            return ""
-        return f"## Relevant Memories\n{result}"
+        with tracer.start_as_current_span("reverie.provider.prefetch") as span:
+            if self._prefetch_thread and self._prefetch_thread.is_alive():
+                self._prefetch_thread.join(timeout=2.0)
+                
+            with self._prefetch_lock:
+                result = self._prefetch_result
+                self._prefetch_result = ""
+                
+            if not result:
+                return ""
+            return f"## Relevant Memories\n{result}"
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Runs a semantic search in the background during the agent's 'thinking' phase."""
-        if not self._retriever or not self._enrichment:
-            return
-
-        def _run():
-            try:
-                # 1. Calculate Budget & Strategy
-                budget = self._calculate_budget()
-                remaining_ratio = self.remaining_tokens / self.total_context if self.total_context > 0 else 0.5
-                strategy = "abstract_only" if remaining_ratio < 0.2 else "balanced"
-                
-                # 2. Embed query
-                vec = self._enrichment.generate_embedding(query)
-                # 3. Search
-                results = self._retriever.search(
-                    vec, 
-                    query_text=query,
-                    limit=3, 
-                    token_budget=budget,
-                    strategy=strategy,
-                    allowed_owners=[self.owner_id, "PERSONAL_WORKSPACE"],
-                    env=self.env
-                )
-                if results:
-                    lines = [f"- {r['content']}" for r in results]
-                    with self._prefetch_lock:
-                        self._prefetch_result = "\n".join(lines)
-            except Exception as e:
-                logger.debug(f"ReverieCore prefetch failed: {e}")
-
-        self._prefetch_thread = threading.Thread(target=_run, daemon=True, name="reverie-prefetch")
-        self._prefetch_thread.start()
+        with tracer.start_as_current_span("reverie.provider.queue_prefetch") as span:
+            if not self._retriever or not self._enrichment:
+                return
+            
+            current_ctx = context.get_current()
+            
+            def _run():
+                token = context.attach(current_ctx)
+                try:
+                    with tracer.start_as_current_span("reverie.provider.prefetch_task") as task_span:
+                        try:
+                            # 1. Calculate Budget & Strategy
+                            budget = self._calculate_budget()
+                            remaining_ratio = self.remaining_tokens / self.total_context if self.total_context > 0 else 0.5
+                            strategy = "abstract_only" if remaining_ratio < 0.2 else "balanced"
+                            
+                            # 2. Embed query
+                            vec = self._enrichment.generate_embedding(query)
+                            # 3. Search
+                            results = self._retriever.search(
+                                vec, 
+                                query_text=query,
+                                limit=3, 
+                                token_budget=budget,
+                                strategy=strategy,
+                                allowed_owners=[self.owner_id, "PERSONAL_WORKSPACE"],
+                                env=self.env
+                            )
+                            if results:
+                                lines = [f"- {r['content']}" for r in results]
+                                with self._prefetch_lock:
+                                    self._prefetch_result = "\n".join(lines)
+                        except Exception as e:
+                            logger.debug(f"ReverieCore prefetch failed: {e}")
+                finally:
+                    context.detach(token)
+            
+            self._prefetch_thread = threading.Thread(target=_run, daemon=True, name="reverie-prefetch")
+            self._prefetch_thread.start()
 
     def _save_memory_sync(self, user_content: str, assistant_content: str, session_id: str = "", metadata: dict = None) -> None:
         """Internal synchronous method to process and save memory."""
-        try:
-            # For turn saving, we focus on the assistant's response or a composite
-            full_text = f"User: {user_content}\nAssistant: {assistant_content}"
-            
-            # 1. Intelligence Layer Analysis (Modular Pipeline)
-            ctx = self._enrichment.enrich(full_text, env=self.env)
-            
-            mem_type = ctx.memory_type
-            importance = ctx.importance_score
-            profile = ctx.profile
-            vec = ctx.embedding
-            
-            # 2. Canonical Merge Check
-            # Search for duplicates with > 0.95 similarity
-            duplicates = self._retriever.find_duplicates(
-                vec, 
-                threshold=0.95, 
-                allowed_owners=[self.owner_id, "PERSONAL_WORKSPACE"]
-            )
-            
-            if duplicates:
-                dup = duplicates[0]
-                dup_id = dup["id"]
-                logger.info(f"Canonical Merge: Match found (ID: {dup_id}, Similarity: {dup['similarity']:.3f}). Synthesizing...")
+        with tracer.start_as_current_span("reverie.provider.save_memory_task") as span:
+            try:
+                # For turn saving, we focus on the assistant's response or a composite
+                full_text = f"User: {user_content}\nAssistant: {assistant_content}"
                 
-                # Merge content using LLM synthesis
-                merged_text = self._enrichment.synthesize_memories(
-                    {dup_id: dup["content_full"], -1: full_text}, 
-                    "canonical_knowledge"
+                # 1. Intelligence Layer Analysis (Modular Pipeline)
+                ctx = self._enrichment.enrich(full_text, env=self.env)
+                
+                mem_type = ctx.memory_type
+                importance = ctx.importance_score
+                profile = ctx.profile
+                vec = ctx.embedding
+                
+                # 2. Canonical Merge Check
+                # Search for duplicates with > 0.95 similarity
+                duplicates = self._retriever.find_duplicates(
+                    vec, 
+                    threshold=0.95, 
+                    allowed_owners=[self.owner_id, "PERSONAL_WORKSPACE"]
                 )
                 
-                # Re-analyze synthesized content (Modular Pipeline)
-                m_ctx = self._enrichment.enrich(merged_text, env=self.env)
-                
-                self._db.update_memory(
-                    dup_id, 
-                    merged_text, 
-                    m_ctx.profile, 
-                    m_ctx.embedding, 
-                    m_ctx.token_count_full, 
-                    m_ctx.token_count_abstract,
-                    importance_score=m_ctx.importance_score,
-                    metadata=metadata
-                )
-                logger.info(f"Memory {dup_id} Canonicalized and Updated.")
-                return 
-
-            # 3. Standard Relational Store (if no merge found)
-            tc_full = ctx.token_count_full
-            tc_abstract = ctx.token_count_abstract
-            
-            with self._db.write_lock() as cursor:
-                import uuid
-                cursor.execute("""
-                    INSERT INTO memories (
-                        content_full, content_abstract, 
-                        token_count_full, token_count_abstract,
-                        memory_type, importance_score, 
-                        author_id, owner_id, actor_id, 
-                        session_id, workspace, guid, metadata
+                if duplicates:
+                    dup = duplicates[0]
+                    dup_id = dup["id"]
+                    logger.info(f"Canonical Merge: Match found (ID: {dup_id}, Similarity: {dup['similarity']:.3f}). Synthesizing...")
+                    
+                    # Merge content using LLM synthesis
+                    merged_text = self._enrichment.synthesize_memories(
+                        {dup_id: dup["content_full"], -1: full_text}, 
+                        "canonical_knowledge"
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    full_text, profile, 
-                    tc_full, tc_abstract,
-                    mem_type.value, importance, 
-                    self.author_id, self.owner_id, self.actor_id, 
-                    session_id or self.session_id, self.workspace, str(uuid.uuid4()),
-                    json.dumps(metadata) if metadata else None
-                ))
-                
-                mem_id = cursor.lastrowid
-                
-                # 4. Vector Store
-                import sqlite_vec
-                cursor.execute("""
-                    INSERT INTO memories_vec (rowid, embedding)
-                    VALUES (?, ?)
-                """, (mem_id, sqlite_vec.serialize_float32(vec)))
-                
-            # 5. Graph Extraction (Extract for all memories to ensure archive completeness)
-            logger.info(f"Triggering enhanced graph extraction for memory {mem_id}")
-            self._enrichment.extract_graph_data(full_text, mem_id, self._db)
+                    
+                    # Re-analyze synthesized content (Modular Pipeline)
+                    m_ctx = self._enrichment.enrich(merged_text, env=self.env)
+                    
+                    self._db.update_memory(
+                        dup_id, 
+                        merged_text, 
+                        m_ctx.profile, 
+                        m_ctx.embedding, 
+                        m_ctx.token_count_full, 
+                        m_ctx.token_count_abstract,
+                        importance_score=m_ctx.importance_score,
+                        metadata=metadata
+                    )
+                    logger.info(f"Memory {dup_id} Canonicalized and Updated.")
+                    return 
 
-            # 6. Mirror-as-Code: Export to Markdown archive immediately
-            if self._mirror_service:
-                self._mirror_service.export_node(mem_id)
+                # 3. Standard Relational Store (if no merge found)
+                tc_full = ctx.token_count_full
+                tc_abstract = ctx.token_count_abstract
+                
+                with self._db.write_lock() as cursor:
+                    import uuid
+                    query = """
+                        INSERT INTO memories (
+                            content_full, content_abstract, 
+                            token_count_full, token_count_abstract,
+                            memory_type, importance_score, 
+                            author_id, owner_id, actor_id, 
+                            session_id, workspace, guid, metadata
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """
+                    params = (
+                        full_text, profile, 
+                        tc_full, tc_abstract,
+                        mem_type.value, importance, 
+                        self.author_id, self.owner_id, self.actor_id, 
+                        session_id or self.session_id, self.workspace, str(uuid.uuid4()),
+                        json.dumps(metadata) if metadata else None
+                    )
+                    with self._db.trace_query("INSERT", "memories", query, params) as span:
+                        cursor.execute(query, params)
+                        mem_id = cursor.lastrowid
+                    
+                    # 4. Vector Store
+                    import sqlite_vec
+                    vec_query = "INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)"
+                    vec_params = (mem_id, sqlite_vec.serialize_float32(vec))
+                    with self._db.trace_query("INSERT", "memories_vec", vec_query, vec_params) as span:
+                        cursor.execute(vec_query, vec_params)
+                    
+                # 5. Graph Extraction (Extract for all memories to ensure archive completeness)
+                logger.info(f"Triggering enhanced graph extraction for memory {mem_id}")
+                self._enrichment.extract_graph_data(full_text, mem_id, self._db)
 
-            logger.debug(f"Memory saved and exported: ID {mem_id}, Type {mem_type.value}, Score {importance}")
-            
-        except Exception as e:
-            logger.warning(f"ReverieCore sync failed: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
+                # 6. Mirror-as-Code: Export to Markdown archive immediately
+                if self._mirror_service:
+                    self._mirror_service.export_node(mem_id)
+
+                logger.debug(f"Memory saved and exported: ID {mem_id}, Type {mem_type.value}, Score {importance}")
+                
+            except Exception as e:
+                logger.warning(f"ReverieCore sync failed: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "", metadata: dict = None) -> None:
         """Asynchronously cleans, scores, embeds, and saves the conversation turn."""
@@ -381,9 +408,16 @@ class ReverieMemoryProvider(MemoryProvider):
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=3.0)
 
+        current_ctx = context.get_current()
+        def _run():
+            token = context.attach(current_ctx)
+            try:
+                self._save_memory_sync(user_content, assistant_content, session_id, final_metadata)
+            finally:
+                context.detach(token)
+
         self._sync_thread = threading.Thread(
-            target=self._save_memory_sync, 
-            args=(user_content, assistant_content, session_id, final_metadata),
+            target=_run, 
             daemon=True, 
             name="reverie-sync"
         )
@@ -456,27 +490,30 @@ class ReverieMemoryProvider(MemoryProvider):
         ]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
-        if tool_name == "recall_reverie":
-            return self._handle_recall_reverie(args.get("memory_id"))
+        with tracer.start_as_current_span("reverie.provider.handle_tool_call") as span:
+            span.set_attribute("tool_name", tool_name)
+            if tool_name == "recall_reverie":
+                return self._handle_recall_reverie(args.get("memory_id"))
 
-        if tool_name == "mirror_archive":
+            if tool_name == "mirror_archive":
+                action = args.get("action")
+                if action == "export":
+                    self.export_all_memories()
+                    return "Bulk export to Markdown archive completed successfully."
+                elif action == "import":
+                    path = args.get("path")
+                    self.import_from_archive(path)
+                    return "Archive import and synchronization completed successfully."
+                return tool_error(f"Unsupported mirror action: {action}")
+
+            if tool_name != "memory":
+                return tool_error(f"Unknown tool: {tool_name}")
+
             action = args.get("action")
-            if action == "export":
-                self.export_all_memories()
-                return "Bulk export to Markdown archive completed successfully."
-            elif action == "import":
-                path = args.get("path")
-                self.import_from_archive(path)
-                return "Archive import and synchronization completed successfully."
-            return tool_error(f"Unsupported mirror action: {action}")
-
-        if tool_name != "memory":
-            return tool_error(f"Unknown tool: {tool_name}")
-
-        action = args.get("action")
-        text = args.get("text", "")
-        mem_id = args.get("memory_id")
-        replacement = args.get("replacement")
+            span.set_attribute("memory_action", action)
+            text = args.get("text", "")
+            mem_id = args.get("memory_id")
+            replacement = args.get("replacement")
 
         if action == "add":
             if not text:
@@ -532,8 +569,9 @@ class ReverieMemoryProvider(MemoryProvider):
 
     def _handle_recall_reverie(self, mem_id: Optional[int]) -> str:
         """Handles the 'drill-down' request with strict multi-tenant validation."""
-        if not mem_id:
-            return tool_error("memory_id is required for recall_reverie.")
+        with tracer.start_as_current_span("reverie.provider.recall_reverie") as span:
+            if not mem_id:
+                return tool_error("memory_id is required for recall_reverie.")
             
         try:
             # 1. Fetch metadata and ownership
@@ -564,8 +602,9 @@ class ReverieMemoryProvider(MemoryProvider):
 
     def _handle_management_search(self, query: str, action_type: str) -> str:
         """Helper to find top 3 semantic matches for confirmation workflow."""
-        # 1. Embed query intent
-        vec = self._enrichment.generate_embedding(query)
+        with tracer.start_as_current_span("reverie.provider.management_search") as span:
+            # 1. Embed query intent
+            vec = self._enrichment.generate_embedding(query)
         # 2. Search
         # We use a large token budget to ensure we get meaningful snippets
         results = self._retriever.search(
@@ -679,18 +718,22 @@ class ReverieMemoryProvider(MemoryProvider):
 
     def export_all_memories(self):
         """Manual trigger to mirror all active memories to disk."""
-        if not self._db or not self._mirror_service:
-            return
-        logger.info("ReverieCore: Starting bulk export of all memories...")
-        cursor = self._db.get_cursor()
-        cursor.execute("SELECT id FROM memories WHERE status = 'ACTIVE'")
-        for (mid,) in cursor.fetchall():
-            self._mirror_service.export_node(mid)
-        logger.info("ReverieCore: Bulk export complete.")
+        with tracer.start_as_current_span("reverie.provider.export_all_memories") as span:
+            if not self._db or not self._mirror_service:
+                return
+            logger.info("ReverieCore: Starting bulk export of all memories...")
+            cursor = self._db.get_cursor()
+            query = "SELECT id FROM memories WHERE status = 'ACTIVE'"
+            with self._db.trace_query("SELECT", "memories", query) as span:
+                cursor.execute(query)
+                for (mid,) in cursor.fetchall():
+                    self._mirror_service.export_node(mid)
+            logger.info("ReverieCore: Bulk export complete.")
 
     def import_from_archive(self, path: Optional[str] = None):
         """Manual trigger to ingest memories from a local archive."""
-        if not self._mirror_service:
-            return
-        p = Path(path) if path else None
-        self._mirror_service.import_archive(p)
+        with tracer.start_as_current_span("reverie.provider.import_from_archive") as span:
+            if not self._mirror_service:
+                return
+            p = Path(path) if path else None
+            self._mirror_service.import_archive(p)

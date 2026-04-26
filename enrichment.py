@@ -277,41 +277,41 @@ class InternalLLMClient:
                     span.set_attribute(k, v)
 
             url = f"{self.base_url}/chat/completions"
-        payload = {
-            "model": self.model_name,
-            "messages": messages,
-            "temperature": 0.1
-        }
-        if json_mode:
-            payload["response_format"] = {"type": "json_object"}
+            payload = {
+                "model": self.model_name,
+                "messages": messages,
+                "temperature": 0.1
+            }
+            if json_mode:
+                payload["response_format"] = {"type": "json_object"}
 
-        req = urllib.request.Request(
-            url, 
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.api_key}"
-            },
-            method="POST"
-        )
-        
-        try:
-            # Slightly longer timeout for actual inference
-            with urllib.request.urlopen(req, timeout=45) as response:
-                result = json.loads(response.read().decode("utf-8"))
-                content = result["choices"][0]["message"]["content"]
-                
-                usage = result.get("usage", {})
-                if usage:
-                    span.set_attribute("gen_ai.usage.input_tokens", usage.get("prompt_tokens", 0))
-                    span.set_attribute("gen_ai.usage.output_tokens", usage.get("completion_tokens", 0))
-                
-                return json.loads(content) if json_mode else content
-        except Exception as e:
-            logger.error(f"InternalLLMClient.call FAILED: {e}")
-            span.set_status(StatusCode.ERROR)
-            span.record_exception(e)
-            return None
+            req = urllib.request.Request(
+                url, 
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.api_key}"
+                },
+                method="POST"
+            )
+            
+            try:
+                # Slightly longer timeout for actual inference
+                with urllib.request.urlopen(req, timeout=45) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+                    content = result["choices"][0]["message"]["content"]
+                    
+                    usage = result.get("usage", {})
+                    if usage:
+                        span.set_attribute("gen_ai.usage.input_tokens", usage.get("prompt_tokens", 0))
+                        span.set_attribute("gen_ai.usage.output_tokens", usage.get("completion_tokens", 0))
+                    
+                    return json.loads(content) if json_mode else content
+            except Exception as e:
+                logger.error(f"InternalLLMClient.call FAILED: {e}")
+                span.set_status(StatusCode.ERROR)
+                span.record_exception(e)
+                return None
 
 class EnrichmentService:
     """The Intelligence Layer: Handles embeddings, BART classification, and profiling."""
@@ -482,12 +482,15 @@ class EnrichmentService:
             self._load_models()
 
     def generate_embedding(self, text: str) -> List[float]:
-        try:
-            self._ensure_loaded(["embedding"])
-            return self.embedding_model.encode([text], show_progress_bar=False)[0].tolist()
-        except Exception as e:
-            logger.error(f"Embedding failed: {e}")
-            return [0.0] * 384 
+        with tracer.start_as_current_span("reverie.enrichment.generate_embedding") as span:
+            try:
+                self._ensure_loaded(["embedding"])
+                return self.embedding_model.encode([text], show_progress_bar=False)[0].tolist()
+            except Exception as e:
+                logger.error(f"Embedding failed: {e}")
+                span.set_status(StatusCode.ERROR)
+                span.record_exception(e)
+                return [0.0] * 384 
 
     def count_tokens(self, text: str) -> int:
         """Counts tokens using the summarizer tokenizer as a proxy."""
@@ -525,33 +528,36 @@ class EnrichmentService:
 
     def synthesize_memories(self, memories: Dict[int, str], entity_name: str) -> str:
         """Uses LLM to synthesize multiple fragmented memories into one high-quality 'Observation Anchor'."""
-        try:
-            if not self.llm_client.check_connectivity():
-                # Fallback: simple join
-                return "\n".join([f"Memory {mid}: {txt}" for mid, txt in memories.items()])[:3000]
+        with tracer.start_as_current_span("reverie.enrichment.synthesize") as span:
+            span.set_attribute("cluster.size", len(memories))
+            span.set_attribute("entity.name", entity_name)
+            try:
+                if not self.llm_client.check_connectivity():
+                    # Fallback: simple join
+                    return "\n".join([f"Memory {mid}: {txt}" for mid, txt in memories.items()])[:3000]
 
-            prompt = (
-                f"You are a memory consolidation service for a Knowledge Graph. "
-                f"Below are several fragmented experiences and memories related to the entity '{entity_name}'. "
-                "Your goal is to synthesize them into one single high-level OBSERVATION ANCHOR. "
-                "\n\nGUIDELINES:\n"
-                "1. Focus on PATTERNS and WISDOM. Do not just list the events; explain the underlying technical behavior or trend.\n"
-                "2. Be comprehensive but high-level. Keep the gritty details accessible by referencing the 'Source IDs'.\n"
-                "3. Use a tone of a generalist summarizing for a specialist.\n"
-                "4. Structure the output clearly with a summary followed by a 'Linked Nuance' section listing the IDs."
-            )
-            
-            context = "\n---\n".join([f"ID {mid}: {txt}" for mid, txt in memories.items()])
-            
-            summary = self.llm_client.call([
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": f"Memories to consolidate:\n{context}"}
-            ], telemetry_metadata={"reverie.operation": "Synthesis"})
-            
-            return summary if isinstance(summary, str) else str(summary)
-        except Exception as e:
-            logger.error(f"Memory synthesis failed: {e}")
-            return "\n".join(memories)
+                prompt = (
+                    f"You are a memory consolidation service for a Knowledge Graph. "
+                    f"Below are several fragmented experiences and memories related to the entity '{entity_name}'. "
+                    "Your goal is to synthesize them into one single high-level OBSERVATION ANCHOR. "
+                    "\n\nGUIDELINES:\n"
+                    "1. Focus on PATTERNS and WISDOM. Do not just list the events; explain the underlying technical behavior or trend.\n"
+                    "2. Be comprehensive but high-level. Keep the gritty details accessible by referencing the 'Source IDs'.\n"
+                    "3. Use a tone of a generalist summarizing for a specialist.\n"
+                    "4. Structure the output clearly with a summary followed by a 'Linked Nuance' section listing the IDs."
+                )
+                
+                context_str = "\n---\n".join([f"ID {mid}: {txt}" for mid, txt in memories.items()])
+                
+                summary = self.llm_client.call([
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": f"Memories to consolidate:\n{context_str}"}
+                ], telemetry_metadata={"reverie.operation": "Synthesis"})
+                
+                return summary if isinstance(summary, str) else str(summary)
+            except Exception as e:
+                logger.error(f"Memory synthesis failed: {e}")
+                return "\n".join(list(memories.values()))
 
     def _zero_shot_classify(self, text: str, labels: List[str], hypothesis_template: str = "This example is {}.") -> Dict[str, float]:
         """Manual implementation of zero-shot classification for MNLI-trained models (mDeBERTa/BART)."""
@@ -756,16 +762,16 @@ class EnrichmentService:
                             description=COALESCE(excluded.description, description),
                             guid=COALESCE(entities.guid, excluded.guid)
                     """
-                    with tracer.start_as_current_span("reverie.db.sql_query") as sql_span:
-                        sql_span.set_attribute("db.statement", "reverie.graph.upsert_entities_batch")
+                    with db_manager.trace_query("INSERT", "entities", query_upsert, batch_size=len(entity_insert_data)) as sql_span:
                         cursor.executemany(query_upsert, entity_insert_data)
                     
                     # Resolve IDs and create MENTIONS links in batch
                     mentions_data = []
                     for name, _, _, _ in entity_insert_data:
                         query_get_id = "SELECT id FROM entities WHERE name = ?"
-                        cursor.execute(query_get_id, (name,))
-                        ent_id = cursor.fetchone()[0]
+                        with db_manager.trace_query("SELECT", "entities", query_get_id, (name,)) as sql_span:
+                            cursor.execute(query_get_id, (name,))
+                            ent_id = cursor.fetchone()[0]
                         entity_map[name] = ent_id
                         mentions_data.append((memory_id, ent_id, memory_id))
 
@@ -773,8 +779,7 @@ class EnrichmentService:
                         INSERT INTO memory_relations (source_id, source_type, target_id, target_type, relation_type, evidence_memory_id)
                         VALUES (?, 'MEMORY', ?, 'ENTITY', 'MENTIONS', ?)
                     """
-                    with tracer.start_as_current_span("reverie.db.sql_query") as sql_span:
-                        sql_span.set_attribute("db.statement", "reverie.graph.insert_mentions_batch")
+                    with db_manager.trace_query("INSERT", "memory_relations", query_mentions, batch_size=len(mentions_data)) as sql_span:
                         cursor.executemany(query_mentions, mentions_data)
 
                 # Pass 2: Extract Triples using Entity names
@@ -823,8 +828,7 @@ class EnrichmentService:
                                 source_id, source_type, target_id, target_type, relation_type, confidence_score, evidence_memory_id
                             ) VALUES (?, ?, ?, ?, ?, ?, ?)
                         """
-                        with tracer.start_as_current_span("reverie.db.sql_query") as sql_span:
-                            sql_span.set_attribute("db.statement", "reverie.graph.insert_triples_batch")
+                        with db_manager.trace_query("INSERT", "memory_relations", query_triples, batch_size=len(triple_insert_data)) as sql_span:
                             cursor.executemany(query_triples, triple_insert_data)
                     self.telemetry["success"] += 1
                 

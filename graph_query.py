@@ -33,9 +33,9 @@ class GraphQueryService:
         if anchor_entities:
             placeholders = ",".join(["?"] * len(anchor_entities))
             query = f"SELECT id FROM entities WHERE name IN ({placeholders})"
-            with tracer.start_as_current_span("reverie.graph.sql_query") as span:
-                span.set_attribute("db.statement", query)
-                cursor.execute(query, tuple(anchor_entities))
+            params = tuple(anchor_entities)
+            with self.db.trace_query("SELECT", "entities", query, params) as span:
+                cursor.execute(query, params)
                 anchor_ids = {row[0] for row in cursor.fetchall()}
         
         # Track state: (node_id, node_type) -> max_score
@@ -121,8 +121,7 @@ class GraphQueryService:
                 # Parameters: values_params, anchor_list (x1), gravity (x2), per_node_limit
                 params = values_params + anchor_list + [gravity, gravity, per_node_limit]
                 
-                with tracer.start_as_current_span("reverie.graph.sql_query") as span:
-                    span.set_attribute("db.statement", "reverie.graph.bulk_expansion")
+                with self.db.trace_query("SELECT", "memory_relations", bulk_query, tuple(params)) as span:
                     span.set_attribute("graph.batch_size", len(batch))
                     cursor.execute(bulk_query, tuple(params))
                     rows = cursor.fetchall()
@@ -162,8 +161,7 @@ class GraphQueryService:
                 AND source_type = 'ENTITY'
                 AND source_id IN (SELECT id FROM entities WHERE name IN ({placeholders}))
             """
-            with tracer.start_as_current_span("reverie.graph.sql_query") as span:
-                span.set_attribute("db.statement", query)
+            with self.db.trace_query("SELECT", "memory_relations", query, tuple(entity_names + entity_names)) as span:
                 cursor.execute(query, entity_names + entity_names)
                 return [row[0] for row in cursor.fetchall()]
 
@@ -183,9 +181,9 @@ class GraphQueryService:
             """
             
             try:
-                with tracer.start_as_current_span("reverie.graph.sql_query") as sql_span:
-                    sql_span.set_attribute("db.statement", "reverie.graph.batch_summary_query")
-                    cursor.execute(query, tuple(memory_ids))
+                params = tuple(memory_ids)
+                with self.db.trace_query("SELECT", "memory_relations", query, params) as sql_span:
+                    cursor.execute(query, params)
                     rows = cursor.fetchall()
                 
                 # Group by source_id
