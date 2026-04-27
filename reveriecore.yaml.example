@@ -1,0 +1,38 @@
+# ReverieCore Retrieval Pipeline Configuration
+# This file controls the discovery, ranking, and budgeting stages of memory retrieval.
+
+retrieval_pipeline:
+  # Stage 1: Discovery (Finding potential candidates)
+  # Options: ["anchoring", "rewriter", "vector"]
+  discovery:
+    - "anchoring"
+    - "rewriter"
+    - "vector"
+
+  # Stage 2: Ranking & Expansion (Scoring and finding related concepts)
+  # Options: ["intent", "graph_expansion", "scoring", "rerank"]
+  ranking:
+    - "intent"
+    - "graph_expansion"
+    - "scoring"
+    - "rerank"
+
+  # Stage 3: Budgeting (Selecting final results based on token budget)
+  # Options: ["budget"]
+  budget:
+    - "budget"
+
+# Plugin Settings & Limits
+settings:
+  memory_char_limit: 32768
+  user_identity: "tom"
+  precision_gate: 0.45
+  relevance_floor: 0.2
+  default_token_budget: 1000
+  default_limit: 5
+  rewriter:
+    enabled: true
+    model_path: "models/Phi-3-mini-4k-instruct-q4.gguf"
+    device: "cpu"
+    threads: 2
+    max_words: 50
