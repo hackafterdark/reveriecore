@@ -41,6 +41,12 @@ def setup_standalone_mocks():
 
 if __name__ == "__main__":
     setup_standalone_mocks()
+    
+    # Configure logging for console visibility
+    import logging
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    # Ensure reveriecore logs propagate to our console handler
+    logging.getLogger("reveriecore").propagate = True
 # ---------------------------------------
 
 # Add parent of reveriecore to path

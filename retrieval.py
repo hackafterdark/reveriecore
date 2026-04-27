@@ -11,6 +11,7 @@ from opentelemetry import trace
 from opentelemetry.trace import StatusCode
 from .telemetry import get_tracer
 from .reranking import RerankerHandler
+from .rewriting import QueryRewriterHandler
 
 tracer = get_tracer(__name__)
 
@@ -319,6 +320,7 @@ class BudgetHandler(RetrievalHandler):
 # Maps string names to handler classes for config-driven pipelines
 HANDLER_REGISTRY = {
     "anchoring": AnchoringDiscovery,
+    "rewriter": QueryRewriterHandler,
     "vector": VectorDiscovery,
     "graph_expansion": GraphExpansionDiscovery,
     "intent": IntentRanker,

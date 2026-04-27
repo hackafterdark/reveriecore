@@ -24,6 +24,7 @@ dependencies = [
     "opentelemetry-semantic-conventions",
     "opentelemetry-instrumentation-logging",
     "flashrank",
+    "llama-cpp-python",
 ]
 
 [project.optional-dependencies]
