@@ -6,6 +6,7 @@ import urllib.request
 import traceback
 import threading
 import uuid
+from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Any
 from pathlib import Path
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoModelForSequenceClassification
@@ -22,6 +23,88 @@ from .telemetry import get_tracer
 tracer = get_tracer(__name__)
 
 logger = logging.getLogger(__name__)
+
+@dataclass
+class HeuristicConfig:
+    importance_boost: float = 9.5
+    keywords: Dict[str, List[str]] = field(default_factory=lambda: {
+        "error": ["error", "exception", "traceback", "failed", "crash", "broken", "bug"],
+        "urgency": ["deadline", "critical", "urgent", "asap", "priority", "important"],
+        "security": ["password", "secret", "api_key", "token", "auth", "credentials"],
+        "code": ["```", "def ", "class ", "import "],
+        "task": ["todo", "task", "goal"]
+    })
+
+@dataclass
+class ScoringConfig:
+    heuristics: HeuristicConfig = field(default_factory=HeuristicConfig)
+    weights: Dict[str, float] = field(default_factory=lambda: {
+        "critical": 10.0,
+        "important": 7.0,
+        "minor": 3.0,
+        "trivial": 1.0
+    })
+
+@dataclass
+class ProfilingConfig:
+    min_word_count: int = 30
+    max_summary_length: int = 150
+    summary_beams: int = 2
+    low_importance_threshold: float = 5.0
+    default_retention_days: int = 7
+
+@dataclass
+class EnrichmentConfig:
+    embedding_model: str = "all-MiniLM-L6-v2"
+    summarization_model: str = "sshleifer/distilbart-cnn-12-6"
+    classifier_model: str = "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"
+    scoring: ScoringConfig = field(default_factory=ScoringConfig)
+    profiling: ProfilingConfig = field(default_factory=ProfilingConfig)
+    active_stages: List[str] = field(default_factory=lambda: ["heuristics", "classifier", "model_importance", "soul_importance"])
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'EnrichmentConfig':
+        """Deep merge factory to create typed config from raw dict."""
+        e_data = data.get("enrichment", {})
+        
+        # Models
+        models = e_data.get("models", {})
+        
+        # Scoring
+        scoring_data = e_data.get("scoring", {})
+        h_data = scoring_data.get("heuristics", {})
+        h_config = HeuristicConfig(
+            importance_boost=h_data.get("importance_boost", 9.5),
+            keywords=h_data.get("keywords", HeuristicConfig().keywords)
+        )
+        s_config = ScoringConfig(
+            heuristics=h_config,
+            weights=scoring_data.get("weights", ScoringConfig().weights)
+        )
+        
+        # Profiling
+        p_data = e_data.get("profiling", {})
+        retention = p_data.get("retention", {})
+        p_config = ProfilingConfig(
+            min_word_count=p_data.get("min_word_count", 30),
+            max_summary_length=p_data.get("max_summary_length", 150),
+            summary_beams=p_data.get("summary_beams", 2),
+            low_importance_threshold=retention.get("low_importance_threshold", 5.0),
+            default_retention_days=retention.get("default_days", 7)
+        )
+        
+        # Pipeline
+        pipe_data = e_data.get("pipeline", {})
+        active_stages = pipe_data.get("active_stages", ["heuristics", "classifier", "model_importance", "soul_importance"])
+
+        return cls(
+            embedding_model=models.get("embedding", cls.embedding_model),
+            summarization_model=models.get("summarization", cls.summarization_model),
+            classifier_model=models.get("classifier", cls.classifier_model),
+            scoring=s_config,
+            profiling=p_config,
+            active_stages=active_stages
+        )
 
 class EnrichmentContext:
     """Mutable state container for the enrichment (ingestion) pipeline."""
@@ -45,6 +128,9 @@ class EnrichmentContext:
 
 class EnrichmentHandler(ABC):
     """Abstract base class for all enrichment pipeline handlers."""
+    def __init__(self, config: Optional[Any] = None):
+        self.config = config
+
     @abstractmethod
     def process(self, context: EnrichmentContext, service: 'EnrichmentService') -> None:
         pass
@@ -56,29 +142,30 @@ class HeuristicImportance(EnrichmentHandler):
     def process(self, context: EnrichmentContext, service: 'EnrichmentService') -> None:
         text_lower = context.text.lower()
         is_important = False
+        cfg = self.config # HeuristicConfig
         
         # 1. Error & Failure Patterns
-        if any(term in text_lower for term in ["error", "exception", "traceback", "failed", "crash", "broken", "bug"]):
+        if any(term in text_lower for term in cfg.keywords.get("error", [])):
             is_important = True
         # 2. Project/Temporal Urgency
-        elif any(term in text_lower for term in ["deadline", "critical", "urgent", "asap", "priority", "important"]):
+        elif any(term in text_lower for term in cfg.keywords.get("urgency", [])):
             is_important = True
         # 3. Security/Identity
-        elif any(term in text_lower for term in ["password", "secret", "api_key", "token", "auth", "credentials"]):
+        elif any(term in text_lower for term in cfg.keywords.get("security", [])):
             is_important = True
         # 4. Structural markers
-        elif "```" in text_lower or "def " in text_lower or "class " in text_lower or "import " in text_lower:
+        elif any(term in text_lower for term in cfg.keywords.get("code", [])):
             is_important = True
             
         if is_important:
-            context.importance_score = 9.5
+            context.importance_score = cfg.importance_boost
             context.metrics["importance_source"] = "heuristics"
             context.metrics["stage_complete"] = True
             
             # Heuristic Type Override
-            if any(kw in text_lower for kw in ["error", "exception", "traceback"]):
+            if any(kw in text_lower for kw in cfg.keywords.get("error", [])):
                 context.memory_type = MemoryType.RUNTIME_ERROR
-            elif any(kw in text_lower for kw in ["todo", "task", "goal"]):
+            elif any(kw in text_lower for kw in cfg.keywords.get("task", [])):
                 context.memory_type = MemoryType.TASK
 
 class ModelImportance(EnrichmentHandler):
@@ -87,11 +174,12 @@ class ModelImportance(EnrichmentHandler):
         if context.importance_score > 5.0: # Skip if heuristics already flagged it
             return
             
-        labels = ["critical", "important", "minor", "trivial"]
+        cfg = self.config # ScoringConfig
+        labels = list(cfg.weights.keys())
         scores = service._zero_shot_classify(context.text, labels, "This information is {}.")
         
         # Weighted average shifted to 0-10 scale
-        raw_score = (scores["critical"] * 10.0) + (scores["important"] * 7.0) + (scores["minor"] * 3.0) + (scores["trivial"] * 1.0)
+        raw_score = sum(scores[label] * cfg.weights[label] for label in labels)
         context.importance_score = max(0.0, min(10.0, raw_score))
         context.metrics["importance_source"] = "model"
 
@@ -136,6 +224,8 @@ class TypeClassifier(EnrichmentHandler):
     def process(self, context: EnrichmentContext, service: 'EnrichmentService') -> None:
         # 1. Heuristic Overrides
         text_lower = context.text.lower()
+        # We reuse the heuristic keywords if available, or fallback to defaults
+        # For now, let's keep it simple as the user didn't explicitly ask to config this yet
         if any(kw in text_lower for kw in ["error", "exception", "traceback"]):
             context.memory_type = MemoryType.RUNTIME_ERROR
             return
@@ -318,12 +408,13 @@ class EnrichmentService:
     
     def __init__(self, config: Optional[Dict[str, Any]] = None, **kwargs):
         # 1. Resolve Configuration
-        self.config = config or load_reverie_config()
+        raw_cfg = config or load_reverie_config()
+        self.config = EnrichmentConfig.from_dict(raw_cfg)
         cfg = self.config
         
-        self.embedding_model_name = cfg.get("embedding_model") or kwargs.get("embedding_model_name") or "all-MiniLM-L6-v2"
-        self.summarization_model_name = cfg.get("summarization_model") or kwargs.get("summarization_model_name") or "sshleifer/distilbart-cnn-12-6"
-        self.classifier_model_name = cfg.get("classifier_model") or kwargs.get("classifier_model_name") or "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"
+        self.embedding_model_name = kwargs.get("embedding_model_name") or cfg.embedding_model
+        self.summarization_model_name = kwargs.get("summarization_model_name") or cfg.summarization_model
+        self.classifier_model_name = kwargs.get("classifier_model_name") or cfg.classifier_model
 
         # Defensive Check: Ensure we have strings, not dicts from positional mismatch
         if not isinstance(self.embedding_model_name, str):
@@ -390,18 +481,26 @@ class EnrichmentService:
         
         # Pipeline Configuration (from config)
         self.analysis_pipeline: List[EnrichmentHandler] = []
-        pipeline_cfg = self.config.get("enrichment_pipeline", {})
         
         # Load analysis stage (Importance & Classification)
-        for h_name in pipeline_cfg.get("analysis", ["heuristics", "classifier", "model_importance", "soul_importance"]):
+        for h_name in cfg.active_stages:
             if h_name in self.HANDLER_REGISTRY:
-                self.analysis_pipeline.append(self.HANDLER_REGISTRY[h_name]())
+                handler_cls = self.HANDLER_REGISTRY[h_name]
+                # Inject specific sub-configs
+                h_cfg = None
+                if h_name == "heuristics":
+                    h_cfg = cfg.scoring.heuristics
+                elif h_name == "model_importance":
+                    h_cfg = cfg.scoring
+                
+                self.analysis_pipeline.append(handler_cls(config=h_cfg))
                 
         # Load profiling stage (Summary & Embedding)
         self.profiling_pipeline: List[EnrichmentHandler] = []
-        for h_name in pipeline_cfg.get("profiling", ["profiler", "embedder"]):
+        for h_name in ["profiler", "embedder"]: # Fixed profiling stages for now
             if h_name in self.HANDLER_REGISTRY:
-                self.profiling_pipeline.append(self.HANDLER_REGISTRY[h_name]())
+                handler_cls = self.HANDLER_REGISTRY[h_name]
+                self.profiling_pipeline.append(handler_cls(config=cfg.profiling))
         
         # Telemetry
         self.telemetry = {"success": 0, "failure": 0}
@@ -506,7 +605,8 @@ class EnrichmentService:
             return (len(text) // 4) + 1
 
     def generate_semantic_profile(self, text: str) -> str:
-        if len(text.split()) < 30: 
+        cfg = self.config.profiling
+        if len(text.split()) < cfg.min_word_count: 
             return text
         try:
             self._ensure_loaded(["summarizer"])
@@ -515,9 +615,9 @@ class EnrichmentService:
             dynamic_min = max(2, min(10, input_len // 2))
             outputs = self.summarizer.generate(
                 inputs["input_ids"], 
-                max_length=150, 
+                max_length=cfg.max_summary_length, 
                 min_length=dynamic_min, 
-                num_beams=2, 
+                num_beams=cfg.summary_beams, 
                 early_stopping=True
             )
             summary = self.summarizer_tokenizer.decode(outputs[0], skip_special_tokens=True)
@@ -644,9 +744,10 @@ class EnrichmentService:
                         logger.error(f"Handler {handler.__class__.__name__} failed: {e}")
                 
             # Suggested Expiration
-            if context.importance_score < 5.0:
+            p_cfg = self.config.profiling
+            if context.importance_score < p_cfg.low_importance_threshold:
                 from datetime import datetime, timedelta
-                context.expires_at = (datetime.utcnow() + timedelta(days=7)).isoformat()
+                context.expires_at = (datetime.utcnow() + timedelta(days=p_cfg.default_retention_days)).isoformat()
                 
             # Token Counts
             context.token_count_full = self.count_tokens(context.text)
@@ -664,9 +765,10 @@ class EnrichmentService:
 
     def _get_expiration(self, importance: float) -> Optional[str]:
         """Suggests an expiration for low-importance memories."""
-        if importance < 5.0:
+        p_cfg = self.config.profiling
+        if importance < p_cfg.low_importance_threshold:
             from datetime import datetime, timedelta
-            return (datetime.utcnow() + timedelta(days=7)).isoformat()
+            return (datetime.utcnow() + timedelta(days=p_cfg.default_retention_days)).isoformat()
         return None
 
     def is_structurally_important(self, text: str) -> bool:
