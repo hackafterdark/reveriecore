@@ -14,7 +14,8 @@ class QueryRewriterHandler(RetrievalHandler):
     Stage A.2: Generative Query expansion.
     Rewrites short technical queries into detailed search terms using a local CPU-bound model.
     """
-    def __init__(self):
+    def __init__(self, config: Optional[Any] = None):
+        super().__init__(config)
         self.generator = None
         self._initialized = False
         

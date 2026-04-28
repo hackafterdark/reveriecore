@@ -12,6 +12,7 @@ from opentelemetry.trace import StatusCode
 from .telemetry import get_tracer
 from .reranking import RerankerHandler
 from .rewriting import QueryRewriterHandler
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 tracer = get_tracer(__name__)
 
@@ -19,12 +20,94 @@ tracer = get_tracer(__name__)
 logger = logging.getLogger(__name__)
 from .retrieval_base import RetrievalContext, RetrievalHandler
 
+# --- Pydantic Configuration Models ---
+
+class AnchoringConfig(BaseModel):
+    clean_slate_keywords: List[str] = Field(default_factory=lambda: ["clean slate", "new idea", "fresh start", "fresh project"])
+
+class VectorConfig(BaseModel):
+    precision_gate: float = Field(default=0.45, ge=0.0, le=1.0)
+    candidate_multiplier: int = Field(default=3, ge=1)
+    fallback_threshold: int = Field(default=3, ge=0)
+
+class GraphExpansionConfig(BaseModel):
+    seed_limit: int = Field(default=3, ge=1)
+    min_signal: float = Field(default=0.6, ge=0.0, le=1.0)
+    discovery_boost: float = Field(default=0.5, ge=0.0, le=1.0)
+
+class DiscoveryConfig(BaseModel):
+    anchoring: AnchoringConfig = Field(default_factory=AnchoringConfig)
+    vector: VectorConfig = Field(default_factory=VectorConfig)
+    graph_expansion: GraphExpansionConfig = Field(default_factory=GraphExpansionConfig)
+
+class IntentWeights(BaseModel):
+    similarity: float = Field(..., ge=0.0, le=1.0)
+    importance: float = Field(..., ge=0.0, le=1.0)
+    decay: float = Field(..., ge=0.0, le=1.0)
+
+    @model_validator(mode='after')
+    def validate_sum(self) -> 'IntentWeights':
+        total = self.similarity + self.importance + self.decay
+        if not math.isclose(total, 1.0, rel_tol=1e-5):
+            # We log a warning and normalize rather than failing hard
+            logger.warning(f"Intent weights sum to {total}, not 1.0. Normalizing.")
+            self.similarity /= total
+            self.importance /= total
+            self.decay /= total
+        return self
+
+class IntentConfig(BaseModel):
+    fact_markers: List[str] = Field(default_factory=lambda: ["what is", "how ", "who ", "where ", "when ", "why ", "list ", "explain ", "identify"])
+    weights: Dict[str, IntentWeights] = Field(default_factory=lambda: {
+        "fact_seeking": IntentWeights(similarity=0.7, importance=0.1, decay=0.2),
+        "exploration": IntentWeights(similarity=0.4, importance=0.4, decay=0.2)
+    })
+
+class ScoringConfig(BaseModel):
+    anchor_boost: float = Field(default=0.2, ge=0.0, le=1.0)
+    graph_boost_multiplier: float = Field(default=0.1, ge=0.0, le=1.0)
+    default_similarities: Dict[str, float] = Field(default_factory=lambda: {"anchor": 0.6, "other": 0.4})
+
+class DecayConfig(BaseModel):
+    half_life_hours: float = Field(default=48.0, gt=0.0)
+    min_decay: float = Field(default=0.1, ge=0.0, le=1.0)
+
+class RankingConfig(BaseModel):
+    intent: IntentConfig = Field(default_factory=IntentConfig)
+    scoring: ScoringConfig = Field(default_factory=ScoringConfig)
+    decay: DecayConfig = Field(default_factory=DecayConfig)
+
+class BudgetConfig(BaseModel):
+    relevance_floor: float = Field(default=0.2, ge=0.0, le=1.0)
+    labels: Dict[str, float] = Field(default_factory=lambda: {"critical": 8.0, "relevant": 4.0})
+
+class PipelineConfig(BaseModel):
+    discovery: List[str] = Field(default_factory=lambda: ["anchoring", "vector"])
+    ranking: List[str] = Field(default_factory=lambda: ["intent", "graph_expansion", "scoring", "rerank"])
+    budget: List[str] = Field(default_factory=lambda: ["budget"])
+
+class RetrievalConfig(BaseModel):
+    discovery: DiscoveryConfig = Field(default_factory=DiscoveryConfig)
+    ranking: RankingConfig = Field(default_factory=RankingConfig)
+    budget: BudgetConfig = Field(default_factory=BudgetConfig)
+    pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'RetrievalConfig':
+        """Safely build config with Pydantic validation."""
+        r_data = data.get("retrieval", {})
+        try:
+            return cls(**r_data)
+        except Exception as e:
+            logger.warning(f"Invalid retrieval configuration in YAML: {e}. Using defaults.")
+            return cls()
+
 class AnchoringDiscovery(RetrievalHandler):
     """Stage A: Semantic Anchoring (Graph-First)"""
     def process(self, context: RetrievalContext, retriever: 'Retriever') -> None:
         # Detect if 'clean slate' requested
-        keywords = ["clean slate", "new idea", "fresh start", "forget history", "new project"]
-        context.is_fresh = any(k in context.query_text.lower() for k in keywords)
+        cfg = self.config # AnchoringConfig
+        context.is_fresh = any(k in context.query_text.lower() for k in cfg.clean_slate_keywords)
         
         if context.is_fresh:
             return
@@ -63,12 +146,14 @@ class AnchoringDiscovery(RetrievalHandler):
 class VectorDiscovery(RetrievalHandler):
     """Stage B: Vector Fallback (Broad Search)"""
     def process(self, context: RetrievalContext, retriever: 'Retriever') -> None:
-        # Triggered if freshness is requested OR we have fewer than 3 graph results
-        if not context.is_fresh and len(context.candidates) >= 3:
+        # Triggered if freshness is requested OR we have fewer than fallback_threshold graph results
+        cfg = self.config # VectorConfig
+        if not context.is_fresh and len(context.candidates) >= cfg.fallback_threshold:
             return
 
         cursor = retriever.db.get_cursor()
-        candidate_limit = context.limit * 3
+        cfg = self.config # VectorConfig
+        candidate_limit = context.limit * cfg.candidate_multiplier
         
         allowed_owners = context.config.get("allowed_owners")
         include_archived = context.config.get("include_archived", False)
@@ -107,7 +192,7 @@ class VectorDiscovery(RetrievalHandler):
                     p_span.set_attribute("memory.content_snippet", (c_a or c_f)[:200])
 
                 # Precision Gate
-                if similarity < 0.45:
+                if similarity < cfg.precision_gate:
                     continue
                     
                 if m_id not in context.candidates:
@@ -131,8 +216,9 @@ class GraphExpansionDiscovery(RetrievalHandler):
             return
 
         # Sort current candidates by temporary score (or importance if scores not set yet)
-        # For expansion, we look at the top 3 results currently in the pool
-        seed_ids = [cid for cid, c in sorted(context.candidates.items(), key=lambda x: x[1].get("similarity", x[1]["importance"]/10.0), reverse=True)[:3]]
+        # For expansion, we look at the top seed_limit results currently in the pool
+        cfg = self.config # GraphExpansionConfig
+        seed_ids = [cid for cid, c in sorted(context.candidates.items(), key=lambda x: x[1].get("similarity", x[1]["importance"]/10.0), reverse=True)[:cfg.seed_limit]]
         
         if not seed_ids:
             return
@@ -147,7 +233,7 @@ class GraphExpansionDiscovery(RetrievalHandler):
         count = len(linked_results)
         avg_signal = sum(linked_results.values()) / count if count > 0 else 0.0
         
-        if count < 3 or avg_signal < 0.6:
+        if count < cfg.seed_limit or avg_signal < cfg.min_signal:
             linked_results = retriever.graph.get_related_memories(seed_ids, anchor_entities=context.anchors, gravity=gravity, depth=2)
             depth = 2
             avg_signal = sum(linked_results.values()) / len(linked_results) if linked_results else 0.0
@@ -172,7 +258,7 @@ class GraphExpansionDiscovery(RetrievalHandler):
                     "id": m_id, "content_full": c_f, "content_abstract": c_a,
                     "tc_full": tc_f or (len(c_f) // 4), "tc_abstract": tc_a or (len(c_a or "") // 4),
                     "importance": imp, "learned_at": lat, "expires_at": exp,
-                    "discovery_boost": linked_results.get(m_id, 0.5),
+                    "discovery_boost": linked_results.get(m_id, cfg.discovery_boost),
                     "source": "graph", "type": m_type, "metadata": meta, "guid": guid
                 }
                 
@@ -182,7 +268,7 @@ class IntentRanker(RetrievalHandler):
     """Detects intent and sets weights."""
     def process(self, context: RetrievalContext, retriever: 'Retriever') -> None:
         query_lower = context.query_text.lower()
-        fact_markers = ["what is", "how ", "who ", "where ", "when ", "why ", "list ", "explain ", "identify"]
+        cfg = self.config # IntentConfig
         
         # Check if weights were manually overridden in config
         manual_sw = context.config.get("similarity_weight")
@@ -192,12 +278,14 @@ class IntentRanker(RetrievalHandler):
         if manual_sw is not None and manual_iw is not None and manual_dw is not None:
             context.intent = "Manual Override"
             context.weights = {"similarity": manual_sw, "importance": manual_iw, "decay": manual_dw}
-        elif any(m in query_lower for m in fact_markers):
+        elif any(m in query_lower for m in cfg.fact_markers):
             context.intent = "Fact-Seeking"
-            context.weights = {"similarity": 0.7, "importance": 0.1, "decay": 0.2}
+            w = cfg.weights["fact_seeking"]
+            context.weights = {"similarity": w.similarity, "importance": w.importance, "decay": w.decay}
         else:
             context.intent = "Exploration"
-            context.weights = {"similarity": 0.4, "importance": 0.4, "decay": 0.2}
+            w = cfg.weights["exploration"]
+            context.weights = {"similarity": w.similarity, "importance": w.importance, "decay": w.decay}
             
         context.metrics["intent"] = context.intent
 
@@ -207,10 +295,12 @@ class ScoringRanker(RetrievalHandler):
         sw = context.weights["similarity"]
         iw = context.weights["importance"]
         dw = context.weights["decay"]
+        cfg = self.config # ScoringConfig
         
         for cid, c in context.candidates.items():
             # 1. Similarity (from vector search or default for graph/anchor)
-            sim = c.get("similarity", 0.6 if c["source"] == "anchor" else 0.4)
+            default_sim = cfg.default_similarities.get(c["source"], cfg.default_similarities.get("other", 0.4))
+            sim = c.get("similarity", default_sim)
             
             # 2. Decay
             decay = 1.0 if context.is_fresh else retriever._calculate_decay(c["learned_at"], c["importance"], c["expires_at"])
@@ -220,8 +310,8 @@ class ScoringRanker(RetrievalHandler):
             
             # 4. Boosts
             boost = 0.0
-            if c["source"] == "anchor": boost = 0.2
-            elif c["source"] == "graph": boost = c.get("discovery_boost", 0.5) * 0.1
+            if c["source"] == "anchor": boost = cfg.anchor_boost
+            elif c["source"] == "graph": boost = c.get("discovery_boost", 0.5) * cfg.graph_boost_multiplier
             
             # Final Score
             c["score"] = (sim * sw) + (imp * iw) + (decay * dw) + boost
@@ -229,8 +319,9 @@ class ScoringRanker(RetrievalHandler):
 class BudgetHandler(RetrievalHandler):
     """Selects results and formats output strings."""
     def process(self, context: RetrievalContext, retriever: 'Retriever') -> None:
-        # 1. Fetch relevance floor from config (default to 0.2 if not set)
-        relevance_floor = context.config.get("relevance_floor", 0.2)
+        # 1. Fetch relevance floor from config
+        cfg = self.config # BudgetConfig
+        relevance_floor = cfg.relevance_floor
 
         # Sort candidates by score
         sorted_candidates = sorted(context.candidates.values(), key=lambda x: x["score"], reverse=True)
@@ -267,8 +358,8 @@ class BudgetHandler(RetrievalHandler):
             if chosen_content:
                 # Map Metadata
                 label = "Incidental"
-                if c["importance"] >= 8.0: label = "Critical"
-                elif c["importance"] >= 4.0: label = "Relevant"
+                if c["importance"] >= cfg.labels.get("critical", 8.0): label = "Critical"
+                elif c["importance"] >= cfg.labels.get("relevant", 4.0): label = "Relevant"
                 
                 date_str = "Unknown"
                 if c["learned_at"]:
@@ -336,7 +427,8 @@ class Retriever:
         self.db = db
         self.graph = GraphQueryService(db)
         self.enrichment = enrichment
-        self.config = load_reverie_config()
+        raw_cfg = load_reverie_config()
+        self.config = RetrievalConfig.from_dict(raw_cfg)
         
         # Pipelines
         self.discovery_pipeline: List[RetrievalHandler] = []
@@ -347,37 +439,36 @@ class Retriever:
 
     def _setup_pipelines(self):
         """Initializes pipelines from config or defaults."""
-        retrieval_cfg = self.config.get("retrieval_pipeline", {})
+        cfg = self.config
         
         # 1. Discovery
-        discovery_names = retrieval_cfg.get("discovery")
-        if discovery_names:
-            for name in discovery_names:
-                if name in HANDLER_REGISTRY:
-                    self.register_handler(HANDLER_REGISTRY[name](), "discovery")
-        else:
-            # Default Discovery
-            self.discovery_pipeline = [AnchoringDiscovery(), VectorDiscovery()]
+        for name in cfg.pipeline.discovery:
+            if name in HANDLER_REGISTRY:
+                h_cls = HANDLER_REGISTRY[name]
+                # Inject specific sub-configs
+                h_cfg = None
+                if name == "anchoring": h_cfg = cfg.discovery.anchoring
+                elif name == "vector": h_cfg = cfg.discovery.vector
+                elif name == "graph_expansion": h_cfg = cfg.discovery.graph_expansion
+                
+                self.register_handler(h_cls(config=h_cfg), "discovery")
             
         # 2. Ranking & Expansion
-        ranking_names = retrieval_cfg.get("ranking")
-        if ranking_names:
-            for name in ranking_names:
-                if name in HANDLER_REGISTRY:
-                    self.register_handler(HANDLER_REGISTRY[name](), "ranking")
-        else:
-            # Default Ranking
-            self.ranking_pipeline = [IntentRanker(), GraphExpansionDiscovery(), ScoringRanker(), RerankerHandler()]
+        for name in cfg.pipeline.ranking:
+            if name in HANDLER_REGISTRY:
+                h_cls = HANDLER_REGISTRY[name]
+                # Inject specific sub-configs
+                h_cfg = None
+                if name == "intent": h_cfg = cfg.ranking.intent
+                elif name == "scoring": h_cfg = cfg.ranking.scoring
+                
+                self.register_handler(h_cls(config=h_cfg), "ranking")
             
         # 3. Budgeting
-        budget_names = retrieval_cfg.get("budget")
-        if budget_names:
-            for name in budget_names:
-                if name in HANDLER_REGISTRY:
-                    self.register_handler(HANDLER_REGISTRY[name](), "budget")
-        else:
-            # Default Budgeting
-            self.budget_pipeline = [BudgetHandler()]
+        for name in cfg.pipeline.budget:
+            if name in HANDLER_REGISTRY:
+                h_cls = HANDLER_REGISTRY[name]
+                self.register_handler(h_cls(config=cfg.budget), "budget")
 
     def _setup_default_pipelines(self):
         """DEPRECATED: Use _setup_pipelines instead."""
@@ -399,8 +490,9 @@ class Retriever:
         Calculates time decay score. 
         - Permanent memories (expires_at is NULL) have NO decay (1.0).
         - High importance memories (>= 8.0) have permanent weight (1.0).
-        - Others follow a 48-hour half-life exponential decay.
+        - Others follow an exponential decay based on config.
         """
+        cfg = self.config.ranking.decay
         if not expires_at or importance >= 8.0:
             return 1.0
         
@@ -409,8 +501,8 @@ class Retriever:
             now = datetime.utcnow()
             age_hours = (now - learned_at).total_seconds() / 3600.0
             
-            decay = math.pow(0.5, age_hours / 48.0)
-            return max(0.1, decay)
+            decay = math.pow(0.5, age_hours / cfg.half_life_hours)
+            return max(cfg.min_decay, decay)
         except Exception as e:
             logger.debug(f"Decay calculation failed: {e}")
             return 1.0

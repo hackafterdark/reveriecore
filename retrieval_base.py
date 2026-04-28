@@ -26,6 +26,9 @@ class RetrievalContext:
 
 class RetrievalHandler(ABC):
     """Abstract base class for all retrieval pipeline handlers."""
+    def __init__(self, config: Optional[Any] = None):
+        self.config = config
+
     @abstractmethod
     def process(self, context: RetrievalContext, retriever: Any) -> None:
         pass
