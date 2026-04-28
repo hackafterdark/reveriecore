@@ -117,8 +117,14 @@ class ReverieMemoryProvider(MemoryProvider):
             try:
                 self._db = DatabaseManager(str(db_path))
                 self._enrichment = EnrichmentService()
-                # Restore knowledge graph anchoring by passing enrichment to Retriever
+                
+                # Retrieval Context
+                from .retrieval import RetrievalConfig, MaintenanceConfig
+                ret_cfg = RetrievalConfig.from_dict(self.config)
                 self._retriever = Retriever(self._db, enrichment=self._enrichment)
+                
+                # Maintenance Context
+                maint_cfg = MaintenanceConfig.from_dict(self.config)
                 
                 # Capture memory_char_limit if passed from config (prioritize reveriecore.yaml)
                 self.memory_char_limit = int(system_cfg.get("memory_char_limit", kwargs.get("memory_char_limit", self.memory_char_limit)))
@@ -126,26 +132,17 @@ class ReverieMemoryProvider(MemoryProvider):
                 # Register for automatic cleanup on exit
                 atexit.register(self.shutdown)
                 
-                # Initialize Mesa Maintenance Service
-                # Pull thresholds from config/kwargs with defaults
-                c_thresh = kwargs.get("mesa_centrality_threshold", 2)
-                a_days = kwargs.get("mesa_retention_days", 14)
-                i_cutoff = kwargs.get("mesa_importance_cutoff", 4.0)
-                interval = kwargs.get("mesa_interval_seconds", 3600)
-                
                 # Initialize MirrorService (Memory-as-Code)
                 archive_path = get_hermes_home() / "reverie_archive"
                 self._mirror_service = MirrorService(self._db, self._enrichment, archive_root=archive_path)
                 self._mirror_service.start()
                 
+                # Initialize Mesa Maintenance Service
                 self._mesa_service = MesaService(
                     self._db, 
                     self._enrichment,
                     mirror=self._mirror_service,
-                    centrality_threshold=int(c_thresh),
-                    age_days=int(a_days),
-                    importance_cutoff=float(i_cutoff),
-                    interval_seconds=int(interval)
+                    config=maint_cfg.mesa
                 )
                 self._mesa_service.start()
                 

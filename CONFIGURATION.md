@@ -1,6 +1,6 @@
 # ReverieCore Configuration Guide
 
-This document explains the configuration options available in `.reveriecore.yaml`. The configuration is organized into three primary functional layers: **System**, **Retrieval**, and **Enrichment**.
+This document explains the configuration options available in `.reveriecore.yaml`. The configuration is organized into four primary functional layers: **System**, **Retrieval**, **Enrichment**, and **Maintenance**.
 
 ---
 
@@ -104,3 +104,20 @@ Controls the ingestion pipeline: how new interactions are processed, embedded, a
 
 ### Pipeline (`enrichment.pipeline`)
 - **`active_stages`**: Enabled ingestion stages (e.g., `["heuristics", "classifier", "model_importance"]`).
+
+---
+
+## 4. Maintenance Configuration (`maintenance`)
+Controls the `MesaService` background maintenance tasks.
+
+### Mesa (`maintenance.mesa`)
+- **`enabled`**: Toggle background maintenance on/off.
+- **`dry_run`**: If true, log actions without executing them (useful for debugging).
+- **`interval_seconds`**: Frequency of maintenance cycles.
+- **`centrality_threshold`**: Minimum connections a memory must have to avoid being archived.
+- **`retention_days`**: Days to keep low-importance memories before archiving.
+- **`importance_cutoff`**: Score threshold (0.0 - 10.0) below which memories are considered "stale".
+- **`consolidation_threshold`**: Number of memories required to trigger hierarchical consolidation.
+- **`purge_enabled`**: Enable Tier 2 deep cleaning (permanent deletion).
+- **`deep_clean_interval_days`**: Frequency of deep cleaning and database `VACUUM`.
+- **`archive_retention_days`**: Days to keep archived memories before permanent deletion.

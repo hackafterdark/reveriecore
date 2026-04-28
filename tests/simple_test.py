@@ -63,7 +63,9 @@ def run_test():
     enrichment.calculate_importance = lambda x: {"score": 4.5, "expires_at": None}
     enrichment.generate_embedding = lambda x: [0.1] * 384
     
-    mesa = MesaService(db, enrichment, age_days=0, importance_cutoff=10.0, interval_seconds=3600)
+    from reveriecore.retrieval import MesaConfig
+    config = MesaConfig(retention_days=0, importance_cutoff=10.0, interval_seconds=3600)
+    mesa = MesaService(db, enrichment, config=config)
     mesa.consolidation_threshold = 3 
     
     with db.write_lock() as cursor:

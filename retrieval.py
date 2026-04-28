@@ -95,6 +95,31 @@ class RewriterConfig(BaseModel):
     threads: int = Field(default=2, ge=1)
     max_words: int = Field(default=50, ge=1)
 
+class MesaConfig(BaseModel):
+    enabled: bool = Field(default=True)
+    dry_run: bool = Field(default=False)
+    interval_seconds: int = Field(default=3600, ge=60)
+    centrality_threshold: int = Field(default=2, ge=0)
+    retention_days: int = Field(default=14, ge=0)
+    importance_cutoff: float = Field(default=4.0, ge=0.0, le=10.0)
+    consolidation_threshold: int = Field(default=5, ge=2)
+    purge_enabled: bool = Field(default=True)
+    deep_clean_interval_days: int = Field(default=30, ge=1)
+    archive_retention_days: int = Field(default=90, ge=1)
+
+class MaintenanceConfig(BaseModel):
+    mesa: MesaConfig = Field(default_factory=MesaConfig)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'MaintenanceConfig':
+        """Safely build maintenance config with Pydantic validation."""
+        m_data = data.get("maintenance", {})
+        try:
+            return cls(**m_data)
+        except Exception as e:
+            logger.warning(f"Invalid maintenance config in YAML. Using defaults. Error: {e}")
+            return cls()
+
 class RetrievalConfig(BaseModel):
     discovery: DiscoveryConfig = Field(default_factory=DiscoveryConfig)
     rewriter: RewriterConfig = Field(default_factory=RewriterConfig)

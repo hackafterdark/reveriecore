@@ -74,6 +74,25 @@ system:
   user_identity: "tom"            # Used for multi-tenant provenance.
   memory_char_limit: 32768        # Total char budget for prompt injection.
 
+# --- 3. Maintenance & Pruning (Mesa) ---
+# Background cleanup and optimization service.
+maintenance:
+  mesa:
+    enabled: true                 # Toggle background maintenance on/off.
+    dry_run: false                # If true, only logs actions without executing.
+    interval_seconds: 3600        # Seconds between maintenance cycles.
+    
+    # Tier 1: Soft Prune & Consolidation
+    centrality_threshold: 2       # Min connections to avoid archival.
+    retention_days: 14            # Days before low-importance memories are archived.
+    importance_cutoff: 4.0        # Score threshold for "stale" detection.
+    consolidation_threshold: 5    # Shared entities required for hierarchical consolidation.
+    
+    # Tier 2: Deep Clean (Purge & Vacuum)
+    purge_enabled: true           # Toggle permanent deletion of old archives.
+    deep_clean_interval_days: 30  # Frequency of database VACUUM and purge.
+    archive_retention_days: 90    # Days to keep ARCHIVED memories before deletion.
+
 # --- 3. Ingestion & Enrichment Configuration ---
 # Controls how new memories are processed, embedded, and summarized.
 enrichment:

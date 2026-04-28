@@ -40,7 +40,9 @@ def test_tree_of_nuance(tmp_path):
         enrichment.generate_embedding = MagicMock(return_value=[0.1] * 384)
         
         # Configure Mesa with low threshold for testing
-        mesa = MesaService(db, enrichment, age_days=0, importance_cutoff=5.0, interval_seconds=3600)
+        from reveriecore.retrieval import MesaConfig
+        config = MesaConfig(retention_days=0, importance_cutoff=5.0, interval_seconds=3600)
+        mesa = MesaService(db, enrichment, config=config)
         mesa.consolidation_threshold = 5 
         
         retriever = Retriever(db, enrichment)

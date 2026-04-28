@@ -3,19 +3,50 @@
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Hermes-purple.svg)](https://github.com/hackafterdark/reveriecore)
 
-**Reverie Core** is a modular, high-performance RAG framework designed for the Hermes agent ecosystem. It transforms flat text memories into a structured, semantic knowledge graph using a decoupled pipeline architecture and industry-standard observability.
+**Reverie Core** is an agentic cognition layer designed for the **Hermes agent ecosystem**. Unlike static RAG frameworks that treat memory as a passive document store, Reverie Core manages memory as a **dynamic, self-pruning knowledge graph.** It bridges the gap between raw data and long-term agent intelligence by automating the **Enrichment** (understanding), **Retention** (budgeting), and **Retrieval** (graph-traversal) of your agent's experience.
+
+Designed from the ground up for local-first performance and full observability, it ensures your agent doesn't just "retrieve" data—it "remembers" with purpose.
 
 ---
 
-## ✨ Key Features
+## 🔗 Platform Strategy: Hermes Memory Provider
 
-- **🧠 Pipeline Orchestration**: Decoupled **Enrichment** and **Retrieval** pipelines that allow for composable handlers (Classification, Profiling, Ranking).
-- **⚡ Hybrid Graph-RAG**: Combines `sqlite-vec` similarity search with **Bidirectional Graph Traversal** to find non-obvious context.
-- **🛡️ Hub Protection**: Intelligent per-node limits to prevent popular entities from creating "noise" in your context window.
-- **🌐 Augmented Knowledge**: Automatically extracts canonical entities (Files, Tools, API nodes) and maps their relationships.
-- **📊 Standardized Observability**: Full **OpenTelemetry** integration with GenAI semantic conventions for tracing and debugging.
-- **📦 Validated Configuration**: Type-safe, Pydantic-backed configuration via `reveriecore.yaml` with automatic mathematical validation (weights, thresholds).
-- **🧹 Active Maintenance**: Background `MesaService` automatically archives noise and sanitizes your context window.
+**Reverie Core** functions as a high-performance **memory plugin** for the [Hermes](https://hermes-agent.nousresearch.com/) ecosystem. Unlike standard utility plugins, it plugs directly into the agent’s core cognitive loop, replacing basic memory storage with a stateful, graph-based knowledge engine.
+
+* **Current Status**: Built specifically for the Hermes `memory_provider` interface, leveraging native hooks for pre-fetch context injection and background write-back synchronization.
+* **The Roadmap**: While currently optimized for the Hermes runtime, the core logic is abstracted via `provider.py`. We are actively refining this **Provider Interface** to ensure the cognition engine remains platform-agnostic, with a roadmap to support future integration as an MCP (Model Context Protocol) server for IDE-based agents (like Cursor) and standalone agent runtimes.
+
+If you are a developer looking to bridge Reverie Core into another agent runtime, `provider.py` serves as the primary abstraction layer, mapping internal graph and memory logic to the host agent's lifecycle events.
+
+---
+
+## ✨ Why Reverie Core?
+
+* **From "RAG" to "Memory"**: Move beyond simple text retrieval. Our `MesaService` actively maintains your knowledge graph, archiving transient noise and elevating critical insights so your context window stays performant.
+* **Decoupled Intelligence**: A plug-and-play architecture where enrichment and retrieval pipelines are fully composable. Swap handlers for classification, profiling, or ranking as your agent's needs evolve.
+* **Local-First, Graph-Powered**: Uses `sqlite-vec` for high-speed similarity search combined with **Bidirectional Graph Traversal** to bridge non-obvious relationships in your data.
+* **Production-Ready Observability**: Built-in **OpenTelemetry** instrumentation (OTLP) provides granular, trace-based insight into how your agent "thinks" and where its retrieval precision bottlenecks lie.
+* **Config-Driven Engineering**: Move away from hardcoded magic numbers. Every threshold, weight, and pipeline stage is managed via a validated `reveriecore.yaml`, allowing for precise, reproducible benchmark tuning.
+
+### 🧠 Data Portability & Resilience
+Reverie Core treats your agent's memory as a first-class citizen. Its **Sync Engine** provides:
+- **Bi-Directional Portability**: Export your entire semantic knowledge graph to Hive-partitioned Markdown files (e.g., `year=2026/month=04/day=27/`) with relationship-mapped frontmatter, and import them back into any `ReverieCore` instance with full structural integrity.
+- **Version-Controlled Cognition**: Exported memories are human-readable and Git-friendly. Commit your agent's "brain" to your repository to track how its knowledge evolves over time.
+- **Data Lake Ready**: Hive-style directory partitioning allows you to hook your agent’s long-term memory into standard data analytics tools (like DuckDB, Trino, or Apache Spark) without additional ETL.
+
+---
+
+### Key Differentiators
+
+| Feature | Reverie Core | Standard RAG Frameworks |
+| :--- | :--- | :--- |
+| **Primary Goal** | Agent State & Cognition | Document Retrieval |
+| **Maintenance** | Active (`MesaService`) | Passive (Static Index) |
+| **Graph Logic** | Bi-directional Traversal | Vector-only or Fixed-depth |
+| **Configurability** | Pydantic-Validated YAML | Hardcoded or Code-heavy |
+| **Tracing** | Native OpenTelemetry | Print statements or external wrappers |
+| **Portability** | Hive-Partitioned Markdown | Opaque Binary Blobs |
+| **Platform** | Native Hermes (Extensible) | Tied to specific RAG libraries |
 
 ---
 
@@ -48,92 +79,24 @@ hf download microsoft/Phi-3-mini-4k-instruct-gguf Phi-3-mini-4k-instruct-q4.gguf
 ```
 
 ### 2. Configuration (`reveriecore.yaml`)
-Reverie Core now uses a structured, validated configuration system. The engine discovers configuration in this order:
+Reverie Core uses a structured, validated configuration system. The engine discovers configuration in this order:
 1.  **Hermes Pointer**: `memory.reveriecore_cfg` in `config.yaml`.
 2.  **Env Var**: `REVERIECORE_CONFIG` path override.
 3.  **Local Default**: `~/.reveriecore.yaml`.
 
-For a full list of available settings and their descriptions, see [**CONFIGURATION.md**](CONFIGURATION.md).
-
-#### Example `reveriecore.yaml`
-```yaml
-retrieval:
-  discovery:
-    vector:
-      precision_gate: 0.45
-  rewriter:
-    enabled: true
-    model_path: "models/Phi-3-mini-4k-instruct-q4.gguf"
-  pipeline:
-    discovery: ["anchoring", "vector"]
-    ranking: ["intent", "scoring", "rerank"]
-
-enrichment:
-  models:
-    embedding: "all-MiniLM-L6-v2"
-  pipeline:
-    active_stages: ["heuristics", "classifier", "model_importance"]
-```
+For a full list of settings, see [**CONFIGURATION.md**](CONFIGURATION.md).
 
 ---
 
-## 🔬 Observability (OpenTelemetry)
+## 📖 Documentation & Architecture
 
-Reverie Core is fully instrumented with **OpenTelemetry**. Every stage of the memory pipeline generates spans, allowing you to visualize exactly where latency or context-precision bottlenecks occur.
-
-### Viewing Traces
-The engine exports traces via OTLP to `localhost:4317`. To view them locally, you can use either Docker or the Jaeger **all-in-one binary** (highly recommended for simplicity):
-
-#### Option A: All-in-One Binary (Recommended)
-1. Download the [Jaeger binary](https://www.jaegertracing.io/download/) for your platform.
-2. Run the `jaeger-all-in-one` executable.
-3. Visit `http://localhost:16686`.
-
-#### Option B: Docker
-```bash
-docker run --rm -d --name jaeger -p 16686:16686 -p 4317:4317 jaegertracing/all-in-one:latest
-```
-
----
-
-## 📖 Documentation
-
-For deep dives into the architecture, see the [AGENT_DOCS](AGENT_DOCS) and [ADR](ADR) directories:
+For deep dives into the mechanics, see the [AGENT_DOCS](AGENT_DOCS) and [ADR](ADR) directories:
 
 - [**Full Configuration Guide**](CONFIGURATION.md)
-- [**Telemetry & Tracing**](AGENT_DOCS/telemetry.md)
 - [ADR 006: Pipeline Architecture](ADR/006-reverie-framework-pipeline-architecture.md)
 - [ADR 008: OpenTelemetry Integration](ADR/008-opentelemetry-integration.md)
-- [Database Schema](AGENT_DOCS/db_schema.md)
 - [Knowledge Graph Mechanics](AGENT_DOCS/knowledge_graph_mechanics.md)
-- [Storage & Enrichment](AGENT_DOCS/how_memory_storage_works.md)
 - [Active Maintenance (Mesa)](AGENT_DOCS/how_mesa_works.md)
-- [**Cross-Encoder Reranking**](AGENT_DOCS/reranker.md)
-
----
-
-## 📂 Directory Structure
-
-```bash
-reveriecore/
-├── AGENT_DOCS/          # Detailed design and research documents
-├── ADR/                 # Architectural Decision Records
-├── tests/               # Unit and integration tests
-├── config.py            # Priority-based configuration discovery
-├── database.py          # SQLite & Vector initialization
-├── enrichment.py        # Enrichment Pipeline & LLM Handlers
-├── graph_query.py       # Graph traversal & Hub Protection
-├── mirror.py            # Lazy re-vectorization & persistent workers
-├── provider.py          # Hermes Plugin Entrypoint
-├── pruning.py           # Token budgeting & selection strategies
-├── reranking.py         # Cross-Encoder Reranking (Stage D)
-├── retrieval.py         # Hybrid-RAG Pipeline Orchestrator
-├── retrieval_base.py    # Shared types & circular import prevention
-├── schemas.py           # Standardized data models
-├── telemetry.py         # OpenTelemetry infrastructure
-├── CONFIGURATION.md     # Detailed configuration reference
-└── reveriecore.yaml     # Local framework configuration
-```
 
 ---
 

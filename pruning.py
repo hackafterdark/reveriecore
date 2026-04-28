@@ -24,21 +24,27 @@ class MesaService:
     def __init__(self, db: DatabaseManager, 
                  enrichment: EnrichmentService,
                  mirror: Any = None,
-                 centrality_threshold: int = 2, 
-                 age_days: int = 14, 
-                 importance_cutoff: float = 4.0,
-                 interval_seconds: int = 3600):
+                 config: Optional[Any] = None):
         self.db = db
         self.enrichment = enrichment
         self.mirror = mirror
-        self.centrality_threshold = centrality_threshold
-        self.max_age_days = age_days
-        self.importance_cutoff = importance_cutoff
-        self.interval_seconds = interval_seconds
-        self.consolidation_threshold = 5 # Higher threshold for pattern recognition
         
-        self.purge_enabled = os.environ.get("REVERIE_MESA_PURGE_ENABLED", "True").lower() == "true"
-        self.dry_run = os.environ.get("REVERIE_MESA_DRY_RUN", "False").lower() == "true"
+        # 1. Use injected config or safe defaults
+        if config:
+            self.config = config
+        else:
+            # Fallback for legacy or direct instantiation
+            from .retrieval import MesaConfig
+            self.config = MesaConfig()
+
+        self.centrality_threshold = self.config.centrality_threshold
+        self.max_age_days = self.config.retention_days
+        self.importance_cutoff = self.config.importance_cutoff
+        self.interval_seconds = self.config.interval_seconds
+        self.consolidation_threshold = self.config.consolidation_threshold
+        
+        self.purge_enabled = self.config.purge_enabled
+        self.dry_run = self.config.dry_run
         
         self._stop_event = threading.Event()
         self._thread = None
@@ -46,6 +52,10 @@ class MesaService:
 
     def start(self):
         """Starts the maintenance loop in a background daemon thread."""
+        if not self.config.enabled:
+            logger.info("MesaService is disabled via configuration.")
+            return
+            
         if self._thread and self._thread.is_alive():
             return
         self._thread = threading.Thread(target=self._run_loop, daemon=True, name="reverie-mesa")
@@ -81,7 +91,7 @@ class MesaService:
         """Triggers deep clean every 30 days."""
         if self.last_deep_clean is None:
             return True
-        return (datetime.now() - self.last_deep_clean).days >= 30
+        return (datetime.now() - self.last_deep_clean).days >= self.config.deep_clean_interval_days
 
     def run_soft_prune(self):
         """Identifies fragmented memories and marks them as ARCHIVED."""
@@ -282,10 +292,11 @@ class MesaService:
                 return
 
             with self.db.write_lock() as cursor:
-                # 1. Delete ARCHIVED memories older than 90 days
-                purge_query = "DELETE FROM memories WHERE status = 'ARCHIVED' AND learned_at < datetime('now', '-90 days')"
-                with self.db.trace_query("DELETE", "memories", purge_query) as span:
-                    cursor.execute(purge_query)
+                # 1. Delete ARCHIVED memories older than N days
+                purge_days = f"-{self.config.archive_retention_days} days"
+                purge_query = "DELETE FROM memories WHERE status = 'ARCHIVED' AND learned_at < datetime('now', ?)"
+                with self.db.trace_query("DELETE", "memories", purge_query, (purge_days,)) as span:
+                    cursor.execute(purge_query, (purge_days,))
                     purged_count = cursor.rowcount
                 
                 # 2. Cleanup orphaned vector entries (if any)

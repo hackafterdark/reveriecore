@@ -86,7 +86,11 @@ def main():
     test_db_path = "tests/mesa_verify.db"
     if os.path.exists(test_db_path): os.remove(test_db_path)
     db = DatabaseManager(test_db_path)
-    mesa = MesaService(db, centrality_threshold=2, age_days=14, importance_cutoff=4.0)
+    from reveriecore.enrichment import EnrichmentService
+    from reveriecore.retrieval import MesaConfig
+    enrichment = EnrichmentService({})
+    config = MesaConfig(centrality_threshold=2, retention_days=14, importance_cutoff=4.0)
+    mesa = MesaService(db, enrichment, config=config)
     try:
         verify_mesa_tier_1_soft_prune(db, mesa)
         verify_mesa_tier_2_deep_clean(db, mesa)
