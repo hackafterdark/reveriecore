@@ -36,6 +36,7 @@ class GraphExpansionConfig(BaseModel):
     discovery_boost: float = Field(default=0.5, ge=0.0, le=1.0)
 
 class DiscoveryConfig(BaseModel):
+    default_limit: int = Field(default=5, ge=1)
     anchoring: AnchoringConfig = Field(default_factory=AnchoringConfig)
     vector: VectorConfig = Field(default_factory=VectorConfig)
     graph_expansion: GraphExpansionConfig = Field(default_factory=GraphExpansionConfig)
@@ -79,6 +80,7 @@ class RankingConfig(BaseModel):
 
 class BudgetConfig(BaseModel):
     relevance_floor: float = Field(default=0.2, ge=0.0, le=1.0)
+    default_token_budget: int = Field(default=1000, ge=1)
     labels: Dict[str, float] = Field(default_factory=lambda: {"critical": 8.0, "relevant": 4.0})
 
 class PipelineConfig(BaseModel):
@@ -86,8 +88,16 @@ class PipelineConfig(BaseModel):
     ranking: List[str] = Field(default_factory=lambda: ["intent", "graph_expansion", "scoring", "rerank"])
     budget: List[str] = Field(default_factory=lambda: ["budget"])
 
+class RewriterConfig(BaseModel):
+    enabled: bool = Field(default=True)
+    model_path: str = Field(default="models/Phi-3-mini-4k-instruct-q4.gguf")
+    device: str = Field(default="cpu")
+    threads: int = Field(default=2, ge=1)
+    max_words: int = Field(default=50, ge=1)
+
 class RetrievalConfig(BaseModel):
     discovery: DiscoveryConfig = Field(default_factory=DiscoveryConfig)
+    rewriter: RewriterConfig = Field(default_factory=RewriterConfig)
     ranking: RankingConfig = Field(default_factory=RankingConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
@@ -450,6 +460,7 @@ class Retriever:
                 if name == "anchoring": h_cfg = cfg.discovery.anchoring
                 elif name == "vector": h_cfg = cfg.discovery.vector
                 elif name == "graph_expansion": h_cfg = cfg.discovery.graph_expansion
+                elif name == "rewriter": h_cfg = cfg.rewriter
                 
                 self.register_handler(h_cls(config=h_cfg), "discovery")
             
@@ -547,8 +558,8 @@ class Retriever:
     def search(self, 
                query_vector: List[float], 
                query_text: str = "",
-               limit: int = 5, 
-               token_budget: int = 1000,
+               limit: Optional[int] = None, 
+               token_budget: Optional[int] = None,
                strategy: str = "balanced",
                similarity_weight: Optional[float] = None, 
                importance_weight: Optional[float] = None,
@@ -563,6 +574,10 @@ class Retriever:
         3. Run Ranking & Expansion Handlers (Serial).
         4. Run Budgeting & Selection Handlers (Serial).
         """
+        # Resolve Defaults from Config
+        limit = limit if limit is not None else self.config.discovery.default_limit
+        token_budget = token_budget if token_budget is not None else self.config.budget.default_token_budget
+
         # 1. Initialize Context
         config = {
             "strategy": strategy,

@@ -101,14 +101,14 @@ class ReverieMemoryProvider(MemoryProvider):
             
             # Load ReverieCore specific config
             self.config = load_reverie_config()
-            settings = self.config.get("settings", {})
+            system_cfg = self.config.get("system", {})
             
             # Database is pinned to the preferred .hermes directory
             db_path = get_hermes_home() / "reveriecore.db"
             
             # Identity Context (Provenance via Author/Actor, Scoping via Owner)
             self.session_id = session_id
-            self.author_id = settings.get("user_identity") or kwargs.get("user_id") or kwargs.get("user_identity") or "USER"
+            self.author_id = system_cfg.get("user_identity") or kwargs.get("user_id") or kwargs.get("user_identity") or "USER"
             self.owner_id = kwargs.get("agent_identity") or "PERSONAL_WORKSPACE"
             self.actor_id = "REVERIE_SYNC_SERVICE"
             self.workspace = kwargs.get("agent_workspace") or "UNKNOWN_WORKSPACE"
@@ -121,7 +121,7 @@ class ReverieMemoryProvider(MemoryProvider):
                 self._retriever = Retriever(self._db, enrichment=self._enrichment)
                 
                 # Capture memory_char_limit if passed from config (prioritize reveriecore.yaml)
-                self.memory_char_limit = int(settings.get("memory_char_limit", kwargs.get("memory_char_limit", self.memory_char_limit)))
+                self.memory_char_limit = int(system_cfg.get("memory_char_limit", kwargs.get("memory_char_limit", self.memory_char_limit)))
                 
                 # Register for automatic cleanup on exit
                 atexit.register(self.shutdown)

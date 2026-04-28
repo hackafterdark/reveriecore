@@ -1,6 +1,5 @@
 # 🌌 Reverie Core
 
-[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/hackafterdark/reveriecore)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Hermes-purple.svg)](https://github.com/hackafterdark/reveriecore)
 
@@ -15,7 +14,7 @@
 - **🛡️ Hub Protection**: Intelligent per-node limits to prevent popular entities from creating "noise" in your context window.
 - **🌐 Augmented Knowledge**: Automatically extracts canonical entities (Files, Tools, API nodes) and maps their relationships.
 - **📊 Standardized Observability**: Full **OpenTelemetry** integration with GenAI semantic conventions for tracing and debugging.
-- **📦 Platform Portability**: Decoupled configuration via `reveriecore.yaml`, allowing Reverie to run in any Python environment.
+- **📦 Validated Configuration**: Type-safe, Pydantic-backed configuration via `reveriecore.yaml` with automatic mathematical validation (weights, thresholds).
 - **🧹 Active Maintenance**: Background `MesaService` automatically archives noise and sanitizes your context window.
 
 ---
@@ -29,57 +28,51 @@
 
 ---
 
-## 📂 Directory Structure
-
-```bash
-reveriecore/
-├── AGENT_DOCS/          # Detailed design and research documents
-├── ADR/                 # Architectural Decision Records
-├── tests/               # Unit and integration tests
-├── config.py            # Priority-based configuration discovery
-├── database.py          # SQLite & Vector initialization
-├── enrichment.py        # Enrichment Pipeline & LLM Handlers
-├── graph_query.py       # Graph traversal & Hub Protection
-├── mirror.py            # Lazy re-vectorization & persistent workers
-├── provider.py          # Hermes Plugin Entrypoint
-├── pruning.py           # Token budgeting & selection strategies
-├── reranking.py         # Cross-Encoder Reranking (Stage D)
-├── retrieval.py         # Hybrid-RAG Pipeline Orchestrator
-├── retrieval_base.py    # Shared types & circular import prevention
-├── schemas.py           # Standardized data models
-├── telemetry.py         # OpenTelemetry infrastructure
-└── reveriecore.yaml     # Local framework configuration
-```
-
----
-
 ## 🚀 Getting Started
 
 ### 1. Installation
-Clone this repository into your Hermes plugins directory and install dependencies:
+Clone this repository into your Hermes plugins directory and install dependencies into the agent's virtual environment:
 
 ```bash
 git clone https://github.com/hackafterdark/reveriecore.git
 cd reveriecore
-./run_tests.sh  # Automatically installs dependencies and verifies environment
+VIRTUAL_ENV=~/.hermes/hermes-agent/venv uv pip install -e .
+./run_tests.sh  # Verifies environment and initializes local models
+```
+
+### 1.5. Download Query Rewriter Model (Optional)
+If you plan to use the **Query Rewriter** (highly recommended for complex queries), you must download the GGUF model manually. From the `reveriecore` root (assuming you have the Hugging Face CLI tool installed):
+
+```bash
+hf download microsoft/Phi-3-mini-4k-instruct-gguf Phi-3-mini-4k-instruct-q4.gguf --local-dir models
 ```
 
 ### 2. Configuration (`reveriecore.yaml`)
-Reverie Core now uses a standalone configuration file. The engine discovers configuration in this order:
+Reverie Core now uses a structured, validated configuration system. The engine discovers configuration in this order:
 1.  **Hermes Pointer**: `memory.reveriecore_cfg` in `config.yaml`.
 2.  **Env Var**: `REVERIECORE_CONFIG` path override.
-3.  **Local Default**: `./reveriecore.yaml`.
+3.  **Local Default**: `~/.reveriecore.yaml`.
+
+For a full list of available settings and their descriptions, see [**CONFIGURATION.md**](CONFIGURATION.md).
 
 #### Example `reveriecore.yaml`
 ```yaml
-# Pipeline Selection
-analysis_pipeline: ["HeuristicImportance", "SoulImportance"]
-retrieval_strategy: "HYBRID_GRAPH"
+retrieval:
+  discovery:
+    vector:
+      precision_gate: 0.45
+  rewriter:
+    enabled: true
+    model_path: "models/Phi-3-mini-4k-instruct-q4.gguf"
+  pipeline:
+    discovery: ["anchoring", "vector"]
+    ranking: ["intent", "scoring", "rerank"]
 
-# Maintenance (Mesa)
-mesa:
-  retention_days: 7
-  importance_cutoff: 4.5
+enrichment:
+  models:
+    embedding: "all-MiniLM-L6-v2"
+  pipeline:
+    active_stages: ["heuristics", "classifier", "model_importance"]
 ```
 
 ---
@@ -107,6 +100,7 @@ docker run --rm -d --name jaeger -p 16686:16686 -p 4317:4317 jaegertracing/all-i
 
 For deep dives into the architecture, see the [AGENT_DOCS](AGENT_DOCS) and [ADR](ADR) directories:
 
+- [**Full Configuration Guide**](CONFIGURATION.md)
 - [**Telemetry & Tracing**](AGENT_DOCS/telemetry.md)
 - [ADR 006: Pipeline Architecture](ADR/006-reverie-framework-pipeline-architecture.md)
 - [ADR 008: OpenTelemetry Integration](ADR/008-opentelemetry-integration.md)
@@ -115,6 +109,31 @@ For deep dives into the architecture, see the [AGENT_DOCS](AGENT_DOCS) and [ADR]
 - [Storage & Enrichment](AGENT_DOCS/how_memory_storage_works.md)
 - [Active Maintenance (Mesa)](AGENT_DOCS/how_mesa_works.md)
 - [**Cross-Encoder Reranking**](AGENT_DOCS/reranker.md)
+
+---
+
+## 📂 Directory Structure
+
+```bash
+reveriecore/
+├── AGENT_DOCS/          # Detailed design and research documents
+├── ADR/                 # Architectural Decision Records
+├── tests/               # Unit and integration tests
+├── config.py            # Priority-based configuration discovery
+├── database.py          # SQLite & Vector initialization
+├── enrichment.py        # Enrichment Pipeline & LLM Handlers
+├── graph_query.py       # Graph traversal & Hub Protection
+├── mirror.py            # Lazy re-vectorization & persistent workers
+├── provider.py          # Hermes Plugin Entrypoint
+├── pruning.py           # Token budgeting & selection strategies
+├── reranking.py         # Cross-Encoder Reranking (Stage D)
+├── retrieval.py         # Hybrid-RAG Pipeline Orchestrator
+├── retrieval_base.py    # Shared types & circular import prevention
+├── schemas.py           # Standardized data models
+├── telemetry.py         # OpenTelemetry infrastructure
+├── CONFIGURATION.md     # Detailed configuration reference
+└── reveriecore.yaml     # Local framework configuration
+```
 
 ---
 

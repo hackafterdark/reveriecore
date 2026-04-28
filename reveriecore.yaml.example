@@ -1,38 +1,113 @@
-# ReverieCore Retrieval Pipeline Configuration
-# This file controls the discovery, ranking, and budgeting stages of memory retrieval.
+# ReverieCore Framework Configuration
+# This file defines the behavior of the memory engine's Enrichment and Retrieval pipelines.
 
-retrieval_pipeline:
-  # Stage 1: Discovery (Finding potential candidates)
-  # Options: ["anchoring", "rewriter", "vector"]
+# --- 1. Retrieval & RAG Configuration ---
+# Controls how the engine finds, ranks, and filters memories for the agent.
+retrieval:
+  # Discovery Phase: Initial candidate selection.
   discovery:
-    - "anchoring"
-    - "rewriter"
-    - "vector"
+    default_limit: 5      # Default number of memories to return if not specified.
+    
+    # Anchoring: High-recall keyword-based detection.
+    anchoring:
+      clean_slate_keywords: ["clean slate", "new idea", "fresh start", "fresh project"]
+      
+    # Vector Search: Semantic similarity thresholds.
+    vector:
+      precision_gate: 0.45       # Minimum similarity score (0.0 - 1.0).
+      candidate_multiplier: 3    # Fetch (limit * multiplier) candidates for ranking.
+      fallback_threshold: 3      # If fewer than this many results found, try fallback.
+      
+    # Graph Expansion: Discovering non-obvious context via relationships.
+    graph_expansion:
+      seed_limit: 3              # Max seeds to use for traversal.
+      min_signal: 0.6            # Minimum edge weight to follow.
+      discovery_boost: 0.5       # Score boost for memories found via graph.
 
-  # Stage 2: Ranking & Expansion (Scoring and finding related concepts)
-  # Options: ["intent", "graph_expansion", "scoring", "rerank"]
-  ranking:
-    - "intent"
-    - "graph_expansion"
-    - "scoring"
-    - "rerank"
-
-  # Stage 3: Budgeting (Selecting final results based on token budget)
-  # Options: ["budget"]
-  budget:
-    - "budget"
-
-# Plugin Settings & Limits
-settings:
-  memory_char_limit: 32768
-  user_identity: "tom"
-  precision_gate: 0.45
-  relevance_floor: 0.2
-  default_token_budget: 1000
-  default_limit: 5
+  # Query Rewriter: LLM-driven expansion and clarification.
   rewriter:
     enabled: true
     model_path: "models/Phi-3-mini-4k-instruct-q4.gguf"
-    device: "cpu"
-    threads: 2
-    max_words: 50
+    device: "cpu"                # cpu or gpu
+    threads: 2                   # CPU threads for inference
+    max_words: 50                # Max word count for rewritten query
+
+  # Ranking Phase: Multi-signal scoring and sorting.
+  ranking:
+    # Intent-Aware Weighting: Adjusts weights based on user query intent.
+    intent:
+      fact_markers: ["what is", "how ", "who ", "where ", "when ", "why ", "list ", "explain ", "identify"]
+      weights:
+        # fact_seeking: high similarity, low importance, low decay
+        fact_seeking: {similarity: 0.7, importance: 0.1, decay: 0.2}
+        # exploration: balanced similarity/importance
+        exploration: {similarity: 0.4, importance: 0.4, decay: 0.2}
+        
+    # Scoring: Final composite score calculation.
+    scoring:
+      anchor_boost: 0.2           # Extra boost for high-level "Observation Anchor" nodes.
+      graph_boost_multiplier: 0.1 # Weight of graph connectivity in final score.
+      default_similarities: {anchor: 0.6, other: 0.4}
+      
+    # Temporal Decay: Prioritizes recent memories.
+    decay:
+      half_life_hours: 48.0       # Score halves every 48 hours.
+      min_decay: 0.1              # Floor to ensure old but critical memories aren't lost.
+
+  # Budgeting Phase: Final selection and token management.
+  budget:
+    relevance_floor: 0.2          # Memories below this score are dropped.
+    default_token_budget: 1000    # Default max tokens for the injection block.
+    labels:
+      critical: 8.0               # Score cutoff for "CRITICAL" label.
+      relevant: 4.0               # Score cutoff for "RELEVANT" label.
+
+  # Pipeline Composition: Defines the active handlers and their execution order.
+  pipeline:
+    discovery: ["anchoring", "vector"]
+    ranking: ["intent", "graph_expansion", "scoring", "rerank"]
+    budget: ["budget"]
+
+# --- 2. System Settings & Limits ---
+# Global plugin configuration.
+system:
+  user_identity: "tom"            # Used for multi-tenant provenance.
+  memory_char_limit: 32768        # Total char budget for prompt injection.
+
+# --- 3. Ingestion & Enrichment Configuration ---
+# Controls how new memories are processed, embedded, and summarized.
+enrichment:
+  # Models: Local AI models used during ingestion.
+  models:
+    embedding: "all-MiniLM-L6-v2"
+    summarization: "sshleifer/distilbart-cnn-12-6"
+    classifier: "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"
+  
+  # Importance Scoring: Heuristic and model-driven importance detection.
+  scoring:
+    heuristics:
+      importance_boost: 9.5
+      keywords:
+        error: ["error", "exception", "traceback", "failed", "crash", "broken", "bug"]
+        urgency: ["deadline", "critical", "urgent", "asap", "priority", "important"]
+        security: ["password", "secret", "api_key", "token", "auth", "credentials"]
+        code: ["```", "def ", "class ", "import "]
+        task: ["todo", "task", "goal"]
+    weights:
+      critical: 10.0
+      important: 7.0
+      minor: 3.0
+      trivial: 1.0
+  
+  # Profiling & Retention: Controls summarization and pruning logic.
+  profiling:
+    min_word_count: 30            # Minimum words to trigger a summary abstract.
+    max_summary_length: 150       # Max tokens for the abstract.
+    summary_beams: 2
+    retention:
+      low_importance_threshold: 5.0 # Memories below this score are candidates for Mesa pruning.
+      default_days: 7               # Default age before archiving low-importance memories.
+  
+  # Active Stages: Controls the enrichment pipeline execution.
+  pipeline:
+    active_stages: ["heuristics", "classifier", "model_importance", "soul_importance"]

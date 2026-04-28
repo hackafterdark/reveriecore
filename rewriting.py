@@ -19,19 +19,30 @@ class QueryRewriterHandler(RetrievalHandler):
         self.generator = None
         self._initialized = False
         
-    def _lazy_init(self, config: dict):
+    def _lazy_init(self, raw_config: dict):
         if self._initialized:
             return
             
         self._initialized = True
-        rewriter_cfg = config.get("settings", {}).get("rewriter", {})
-        if not rewriter_cfg.get("enabled", True):
+        
+        # 1. Use injected Pydantic config if available
+        if self.config and hasattr(self.config, "model_path"):
+            cfg = self.config
+            enabled = cfg.enabled
+            self.model_path = cfg.model_path
+            self.max_words = cfg.max_words
+            threads = cfg.threads
+        else:
+            # Fallback for legacy calls
+            rewriter_cfg = raw_config.get("settings", {}).get("rewriter", {})
+            enabled = rewriter_cfg.get("enabled", True)
+            self.model_path = rewriter_cfg.get("model_path", "models/phi-3-mini-q4.gguf")
+            self.max_words = rewriter_cfg.get("max_words", 10)
+            threads = rewriter_cfg.get("threads", 2)
+
+        if not enabled:
             return
 
-        self.model_path = rewriter_cfg.get("model_path", "models/phi-3-mini-q4.gguf")
-        self.max_words = rewriter_cfg.get("max_words", 10)
-        threads = rewriter_cfg.get("threads", 2)
-        
         import os
         if not os.path.exists(self.model_path):
             logger.warning(f"QueryRewriter model file NOT found at {self.model_path}. Expansion will be disabled.")
