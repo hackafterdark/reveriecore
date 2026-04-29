@@ -79,6 +79,13 @@ retrieval:
 system:
   user_identity: "tom"            # Used for multi-tenant provenance.
   memory_char_limit: 32768        # Total char budget for prompt injection.
+  
+  # Telemetry (OpenTelemetry / Jaeger)
+  # Allows tracking pipeline performance and debugging.
+  telemetry:
+    enabled: true                 # Set to false to completely disable OTel.
+    # endpoint: "http://localhost:4318/v1/traces" # Custom OTLP collector URL.
+    # If endpoint is not reachable, telemetry will gracefully disable to prevent noise.
 
 # --- 3. Maintenance & Pruning (Mesa) ---
 # Background cleanup and optimization service.

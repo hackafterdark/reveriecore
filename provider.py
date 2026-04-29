@@ -93,15 +93,25 @@ class ReverieMemoryProvider(MemoryProvider):
         try:
             self._setup_logging()
             
-            # 0. Initialize Telemetry
-            initialize_telemetry()
-            
             from hermes_constants import get_hermes_home
             from .config import load_reverie_config
             
-            # Load ReverieCore specific config
+            # 1. Load ReverieCore specific config
             self.config = load_reverie_config()
             system_cfg = self.config.get("system", {})
+            telemetry_cfg = system_cfg.get("telemetry", {})
+            
+            # 2. Initialize Telemetry with config
+            # We initialize AFTER loading config so user preferences are respected
+            t_endpoint = telemetry_cfg.get("endpoint") if isinstance(telemetry_cfg, dict) else None
+            t_enabled = telemetry_cfg.get("enabled", True) if isinstance(telemetry_cfg, dict) else True
+            
+            initialize_telemetry(
+                service_name="reveriecore",
+                endpoint=t_endpoint,
+                enabled=t_enabled
+            )
+
             
             # Database is pinned to the preferred .hermes directory
             db_path = get_hermes_home() / "reveriecore.db"
