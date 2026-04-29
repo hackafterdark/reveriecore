@@ -12,6 +12,19 @@ Global settings for the ReverieCore plugin.
 | `user_identity` | `string` | `"USER"` | The primary user's name/ID, used for provenance tracking. |
 | `memory_char_limit` | `int` | `32768` | The absolute maximum character limit for memory injection into the prompt. |
 
+### Telemetry (`system.telemetry`)
+ReverieCore supports OpenTelemetry for performance tracking and pipeline visualization.
+
+- **`enabled`**: Toggle telemetry tracking on/off. Defaults to `true`.
+- **`endpoint`**: The OTLP collector URL (e.g., `http://localhost:4318/v1/traces`). 
+- **`protocol`**: The OTLP protocol to use. Supports `http/protobuf` and `http/json`.
+- **`headers`**: A dictionary of custom headers to send with OTLP requests (e.g., `Authorization: "Bearer <token>"`).
+- **`resource_attributes`**: A dictionary of global attributes to attach to all traces (e.g., `environment: "production"`).
+
+> [!NOTE]
+> **Graceful Failure**: If the configured telemetry endpoint is unreachable at startup, ReverieCore will log a warning and automatically disable telemetry for the session to prevent performance degradation or log spam.
+
+
 ---
 
 ## 2. Retrieval Configuration (`retrieval`)

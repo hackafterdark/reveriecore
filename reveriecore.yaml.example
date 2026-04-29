@@ -85,7 +85,15 @@ system:
   telemetry:
     enabled: true                 # Set to false to completely disable OTel.
     # endpoint: "http://localhost:4318/v1/traces" # Custom OTLP collector URL.
+    # protocol: "http/protobuf"     # Protocol: http/protobuf or http/json.
+    # headers:                    # Optional headers (e.g. for Auth).
+    #   Authorization: "Bearer your-token-here"
+    #   X-Custom-Header: "value"
+    # resource_attributes:        # Custom attributes for the tracer resource.
+    #   environment: "production"
+    #   deployment.id: "reverie-01"
     # If endpoint is not reachable, telemetry will gracefully disable to prevent noise.
+
 
 # --- 3. Maintenance & Pruning (Mesa) ---
 # Background cleanup and optimization service.

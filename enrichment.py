@@ -721,8 +721,9 @@ class EnrichmentService:
                     try:
                         handler.process(context, self)
                         h_span.set_attribute("handler.name", handler.__class__.__name__)
-                        h_span.set_attribute("importance_score", context.importance_score)
+                        h_span.set_attribute("importance_score", float(context.importance_score))
                     except Exception as e:
+
                         h_span.set_status(StatusCode.ERROR)
                         h_span.record_exception(e)
                         logger.error(f"Handler {handler.__class__.__name__} failed: {e}")
@@ -753,8 +754,9 @@ class EnrichmentService:
             context.token_count_full = self.count_tokens(context.text)
             context.token_count_abstract = self.count_tokens(context.profile)
             
-            span.set_attribute("reverie.importance", context.importance_score)
+            span.set_attribute("reverie.importance", float(context.importance_score))
             span.set_attribute("reverie.memory_type", context.memory_type.value)
+
             
             return context
 

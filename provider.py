@@ -105,12 +105,19 @@ class ReverieMemoryProvider(MemoryProvider):
             # We initialize AFTER loading config so user preferences are respected
             t_endpoint = telemetry_cfg.get("endpoint") if isinstance(telemetry_cfg, dict) else None
             t_enabled = telemetry_cfg.get("enabled", True) if isinstance(telemetry_cfg, dict) else True
+            t_headers = telemetry_cfg.get("headers") if isinstance(telemetry_cfg, dict) else None
+            t_protocol = telemetry_cfg.get("protocol") if isinstance(telemetry_cfg, dict) else None
+            t_attributes = telemetry_cfg.get("resource_attributes") if isinstance(telemetry_cfg, dict) else None
             
             initialize_telemetry(
-                service_name="reveriecore",
                 endpoint=t_endpoint,
+                headers=t_headers,
+                protocol=t_protocol,
+                resource_attributes=t_attributes,
                 enabled=t_enabled
             )
+
+
 
             
             # Database is pinned to the preferred .hermes directory

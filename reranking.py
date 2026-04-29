@@ -96,7 +96,8 @@ class RerankerHandler(RetrievalHandler):
                 results = ranker.rerank(req)
                 
                 latency_ms = (time.perf_counter() - start_time) * 1000
-                span.set_attribute("rag.retrieval.rerank_latency", latency_ms)
+                span.set_attribute("rag.retrieval.rerank_latency", float(latency_ms))
+
                 
                 # Update scores and source
                 for r in results:

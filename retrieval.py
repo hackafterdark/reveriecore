@@ -228,8 +228,9 @@ class VectorDiscovery(RetrievalHandler):
                 
                 # Telemetry for Precision Histogram
                 with tracer.start_as_current_span("reverie.retrieval.precision_log") as p_span:
-                    p_span.set_attribute("retrieval.score", similarity)
+                    p_span.set_attribute("retrieval.score", float(similarity))
                     p_span.set_attribute("memory.id", m_id)
+
                     # Add content snippet for visual debugging in Jaeger
                     p_span.set_attribute("memory.content_snippet", (c_a or c_f)[:200])
 
@@ -668,7 +669,8 @@ class Retriever:
             
             if context.results:
                 avg_score = sum(r.get("score", 0.0) for r in context.results) / len(context.results)
-                span.set_attribute("retrieval.score", avg_score)
+                span.set_attribute("retrieval.score", float(avg_score))
+
             
             logger.info(f"Retrieved {len(context.results)} memories ({context.consumed_tokens}/{token_budget} tokens). Intent: {context.intent}, Metrics: {context.metrics}")
             
