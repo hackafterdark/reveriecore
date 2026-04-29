@@ -19,6 +19,7 @@ tracer = get_tracer(__name__)
 
 logger = logging.getLogger(__name__)
 from .retrieval_base import RetrievalContext, RetrievalHandler
+from .pruning import PruningHandler
 
 # --- Pydantic Configuration Models ---
 
@@ -83,9 +84,14 @@ class BudgetConfig(BaseModel):
     default_token_budget: int = Field(default=1000, ge=1)
     labels: Dict[str, float] = Field(default_factory=lambda: {"critical": 8.0, "relevant": 4.0})
 
+class PruningConfig(BaseModel):
+    top_n: int = Field(default=3, ge=1)
+    relative_threshold: float = Field(default=0.0, ge=0.0, le=1.0) # Passive by default
+    min_absolute_score: float = Field(default=0.3, ge=0.0, le=1.0)
+
 class PipelineConfig(BaseModel):
     discovery: List[str] = Field(default_factory=lambda: ["anchoring", "vector"])
-    ranking: List[str] = Field(default_factory=lambda: ["intent", "graph_expansion", "scoring", "rerank"])
+    ranking: List[str] = Field(default_factory=lambda: ["intent", "graph_expansion", "scoring", "rerank", "pruning"])
     budget: List[str] = Field(default_factory=lambda: ["budget"])
 
 class RewriterConfig(BaseModel):
@@ -124,6 +130,7 @@ class RetrievalConfig(BaseModel):
     discovery: DiscoveryConfig = Field(default_factory=DiscoveryConfig)
     rewriter: RewriterConfig = Field(default_factory=RewriterConfig)
     ranking: RankingConfig = Field(default_factory=RankingConfig)
+    pruning: PruningConfig = Field(default_factory=PruningConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
 
@@ -452,6 +459,7 @@ HANDLER_REGISTRY = {
     "intent": IntentRanker,
     "scoring": ScoringRanker,
     "rerank": RerankerHandler,
+    "pruning": PruningHandler,
     "budget": BudgetHandler
 }
 
@@ -497,6 +505,7 @@ class Retriever:
                 h_cfg = None
                 if name == "intent": h_cfg = cfg.ranking.intent
                 elif name == "scoring": h_cfg = cfg.ranking.scoring
+                elif name == "pruning": h_cfg = cfg.pruning
                 
                 self.register_handler(h_cls(config=h_cfg), "ranking")
             

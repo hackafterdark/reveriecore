@@ -53,6 +53,12 @@ retrieval:
     decay:
       half_life_hours: 48.0       # Score halves every 48 hours.
       min_decay: 0.1              # Floor to ensure old but critical memories aren't lost.
+    
+    # Pruning Phase: Filters out noise immediately after re-ranking.
+    pruning:
+      top_n: 3                      # Max number of candidates allowed.
+      relative_threshold: 0.0       # Discard results < X% of the top scorer's quality.
+      min_absolute_score: 0.3       # Hard floor; discard anything below this.
 
   # Budgeting Phase: Final selection and token management.
   budget:
@@ -65,7 +71,7 @@ retrieval:
   # Pipeline Composition: Defines the active handlers and their execution order.
   pipeline:
     discovery: ["anchoring", "vector"]
-    ranking: ["intent", "graph_expansion", "scoring", "rerank"]
+    ranking: ["intent", "graph_expansion", "scoring", "rerank", "pruning"]
     budget: ["budget"]
 
 # --- 2. System Settings & Limits ---
@@ -92,6 +98,11 @@ maintenance:
     purge_enabled: true           # Toggle permanent deletion of old archives.
     deep_clean_interval_days: 30  # Frequency of database VACUUM and purge.
     archive_retention_days: 90    # Days to keep ARCHIVED memories before deletion.
+    
+    # Pruning & Quality Floor
+    pruning:
+      retention_threshold: 0.4    # Min quality score to remain ACTIVE in DB.
+      batch_size: 50              # Number of nodes processed per batch.
 
 # --- 3. Ingestion & Enrichment Configuration ---
 # Controls how new memories are processed, embedded, and summarized.

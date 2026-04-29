@@ -65,6 +65,13 @@ Controls how discovered candidates are scored and sorted.
   - `half_life_hours`: Hours after which a memory's temporal score is halved.
   - `min_decay`: The lowest possible decay multiplier (floor).
 
+### Pruning (`retrieval.pruning`)
+Filters candidates based on score quality immediately after re-ranking.
+
+- **`top_n`**: Absolute maximum number of candidates to keep.
+- **`relative_threshold`**: Contextual quality gate (0.0 to 1.0). Discards candidates that aren't at least X% as good as the top scorer.
+- **`min_absolute_score`**: The "hard floor". Discards anything below this score regardless of relative performance.
+
 ### Budgeting (`retrieval.budget`)
 Controls the final selection and formatting for prompt injection.
 
@@ -75,7 +82,7 @@ Controls the final selection and formatting for prompt injection.
 ### Pipeline (`retrieval.pipeline`)
 Determines the order and selection of active retrieval handlers.
 - **`discovery`**: List of active discovery stages (e.g., `["anchoring", "vector"]`).
-- **`ranking`**: List of active ranking stages (e.g., `["intent", "scoring"]`).
+- **`ranking`**: List of active ranking stages (e.g., `["intent", "scoring", "rerank", "pruning"]`).
 - **`budget`**: List of active budgeting stages.
 
 ---
@@ -121,3 +128,6 @@ Controls the `MesaService` background maintenance tasks.
 - **`purge_enabled`**: Enable Tier 2 deep cleaning (permanent deletion).
 - **`deep_clean_interval_days`**: Frequency of deep cleaning and database `VACUUM`.
 - **`archive_retention_days`**: Days to keep archived memories before permanent deletion.
+- **`pruning`**:
+  - `retention_threshold`: Quality threshold for background maintenance.
+  - `batch_size`: Number of nodes processed per maintenance batch.

@@ -10,8 +10,97 @@ from .enrichment import EnrichmentService
 from .schemas import MemoryType
 from .telemetry import get_tracer
 
+from .retrieval_base import RetrievalContext, RetrievalHandler
+
 tracer = get_tracer(__name__)
 logger = logging.getLogger(__name__)
+
+
+class PruningEngine:
+    """Stateless utility for filtering retrieval candidates based on score quality."""
+
+    @staticmethod
+    def prune(candidates: Dict[int, Dict[str, Any]], 
+              top_n: int = 3, 
+              relative_threshold: float = 0.5, 
+              min_absolute_score: float = 0.3) -> Dict[int, Dict[str, Any]]:
+        """
+        Filters candidates using a multi-gate approach:
+        1. Top-N limit.
+        2. Relative threshold (percentage of the top score).
+        3. Absolute floor (hard cutoff).
+        """
+        if not candidates:
+            return {}
+
+        # 1. Sort by score
+        sorted_items = sorted(
+            candidates.items(), 
+            key=lambda x: x[1].get("score", 0.0), 
+            reverse=True
+        )
+
+        top_score = sorted_items[0][1].get("score", 0.0)
+        
+        # 2. Filter
+        pruned = {}
+        for cid, cand in sorted_items[:top_n]:
+            score = cand.get("score", 0.0)
+            
+            # Relative Gate: Must be within X% of the best result
+            is_relative_match = score >= (top_score * relative_threshold)
+            
+            # Absolute Gate: Must be above the hard floor
+            is_absolute_match = score >= min_absolute_score
+            
+            if is_relative_match and is_absolute_match:
+                pruned[cid] = cand
+        
+        return pruned
+
+
+class PruningHandler(RetrievalHandler):
+    """Stage E: Quality-based Pruning (The 'Junk' Sieve)"""
+
+    def process(self, context: RetrievalContext, retriever: Any) -> None:
+        if not context.candidates:
+            return
+
+        # Config resolution (expects a PruningConfig-like object or dict)
+        if hasattr(self.config, "top_n"):
+            top_n = self.config.top_n
+            rel_thresh = self.config.relative_threshold
+            min_abs = self.config.min_absolute_score
+        else:
+            # Fallback for manual dict injection
+            cfg = self.config or {}
+            top_n = cfg.get("top_n", 3)
+            rel_thresh = cfg.get("relative_threshold", 0.5)
+            min_abs = cfg.get("min_absolute_score", 0.3)
+
+        original_count = len(context.candidates)
+        
+        # Execute Pruning
+        context.candidates = PruningEngine.prune(
+            context.candidates,
+            top_n=top_n,
+            relative_threshold=rel_thresh,
+            min_absolute_score=min_abs
+        )
+        
+        pruned_count = original_count - len(context.candidates)
+        
+        # Telemetry
+        context.metrics["pruning"] = {
+            "pruned": pruned_count,
+            "remaining": len(context.candidates),
+            "top_n_limit": top_n,
+            "relative_threshold": rel_thresh,
+            "min_absolute_score": min_abs
+        }
+        
+        if pruned_count > 0:
+            logger.info(f"PruningHandler: Filtered {pruned_count} noise candidates. Remaining: {len(context.candidates)}")
 
 
 class MesaService:
