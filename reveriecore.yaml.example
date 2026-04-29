@@ -56,7 +56,7 @@ retrieval:
     
     # Pruning Phase: Filters out noise immediately after re-ranking.
     pruning:
-      top_n: 3                      # Max number of candidates allowed.
+      top_n: 4                      # Max number of candidates allowed.
       relative_threshold: 0.0       # Discard results < X% of the top scorer's quality.
       min_absolute_score: 0.3       # Hard floor; discard anything below this.
 
