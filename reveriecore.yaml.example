@@ -24,9 +24,8 @@ retrieval:
       min_signal: 0.6            # Minimum edge weight to follow.
       discovery_boost: 0.5       # Score boost for memories found via graph.
 
-  # Query Rewriter: LLM-driven expansion and clarification.
+  # Query Rewriter: LLM-driven expansion and clarification. Activated by including "rewriter" in the retrieval pipeline.
   rewriter:
-    enabled: true
     model_path: "models/Phi-3-mini-4k-instruct-q4.gguf"
     device: "cpu"                # cpu or gpu
     threads: 2                   # CPU threads for inference
@@ -99,7 +98,8 @@ system:
 # Background cleanup and optimization service.
 maintenance:
   mesa:
-    enabled: true                 # Toggle background maintenance on/off.
+    # Activation by Inclusion: List active stages. Empty list [] disables background maintenance.
+    pipeline: ["soft_prune", "consolidate", "deep_clean"]
     dry_run: false                # If true, only logs actions without executing.
     interval_seconds: 3600        # Seconds between maintenance cycles.
     

@@ -141,15 +141,15 @@ class MesaService:
 
     def start(self):
         """Starts the maintenance loop in a background daemon thread."""
-        if not self.config.enabled:
-            logger.info("MesaService is disabled via configuration.")
+        if not self.config.pipeline:
+            logger.info("MesaService has no active pipeline stages. Skipping background loop.")
             return
             
         if self._thread and self._thread.is_alive():
             return
         self._thread = threading.Thread(target=self._run_loop, daemon=True, name="reverie-mesa")
         self._thread.start()
-        logger.info(f"MesaService started (Interval: {self.interval_seconds}s, DryRun: {self.dry_run})")
+        logger.info(f"MesaService started (Interval: {self.interval_seconds}s, Stages: {self.config.pipeline}, DryRun: {self.dry_run})")
 
     def stop(self):
         """Signals the background thread to stop."""
@@ -159,19 +159,19 @@ class MesaService:
             logger.info("MesaService stopped.")
 
     def _run_loop(self):
-        """Main background loop."""
+        """Main background loop following Activation by Inclusion."""
         while not self._stop_event.wait(self.interval_seconds):
             with tracer.start_as_current_span("reverie.mesa.maintenance_cycle") as span:
                 try:
-                    # 1. Soft Prune (Tier 1: Fragmentation Cleanup)
-                    self.run_soft_prune()
-                    
-                    # 1.5. Hierarchical Consolidation (Tier 1.5: The Tree of Nuance)
-                    self.run_hierarchical_consolidation()
-                    
-                    # 2. Deep Clean (Tier 2: Purge & Vacuum - Once a month)
-                    if self.purge_enabled and self._should_deep_clean():
-                        self.run_deep_clean()
+                    for stage in self.config.pipeline:
+                        with tracer.start_as_current_span(f"reverie.mesa.stage.{stage}") as s_span:
+                            if stage == "soft_prune":
+                                self.run_soft_prune()
+                            elif stage == "consolidate":
+                                self.run_hierarchical_consolidation()
+                            elif stage == "deep_clean":
+                                if self.purge_enabled and self._should_deep_clean():
+                                    self.run_deep_clean()
                 except Exception as e:
                     logger.error(f"MesaService loop error: {e}")
                     span.record_exception(e)

@@ -12,6 +12,12 @@ class MemoryType(Enum):
     EXPIRED_TASK = "EXPIRED_TASK"
     ENTITY = "ENTITY"
 
+class RetrievalIntent(Enum):
+    """Categorical user intent to guide graph traversal."""
+    CAUSAL = "CAUSAL"
+    PROCEDURAL = "PROCEDURAL"
+    DESCRIPTIVE = "DESCRIPTIVE"
+
 class RelationType(Enum):
     """Categorical relationships between two memory nodes."""
     PRECEDES = "PRECEDES"

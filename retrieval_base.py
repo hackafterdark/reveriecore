@@ -19,6 +19,7 @@ class RetrievalContext:
         self.results: List[Dict[str, Any]] = []
         self.is_fresh: bool = False
         self.anchors: List[str] = []
+        self.metadata: Dict[str, Any] = {}
 
     @property
     def remaining_budget(self) -> int:

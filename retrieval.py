@@ -19,6 +19,7 @@ tracer = get_tracer(__name__)
 
 logger = logging.getLogger(__name__)
 from .retrieval_base import RetrievalContext, RetrievalHandler
+from .schemas import MemoryType, RelationType, RetrievalIntent
 from .pruning import PruningHandler
 
 # --- Pydantic Configuration Models ---
@@ -36,11 +37,19 @@ class GraphExpansionConfig(BaseModel):
     min_signal: float = Field(default=0.6, ge=0.0, le=1.0)
     discovery_boost: float = Field(default=0.5, ge=0.0, le=1.0)
 
+class IntentClassifierConfig(BaseModel):
+    mappings: Dict[str, List[str]] = Field(default_factory=lambda: {
+        "troubleshooting and root cause analysis": ["CAUSES", "DEPENDS_ON", "SUPPORTS"],
+        "step-by-step instructions and prerequisites": ["PRECEDES", "FOLLOWS", "PREREQUISITE_FOR"],
+        "general definition and conceptual mapping": ["IS_A", "PART_OF", "DEFINES", "MENTIONS"]
+    })
+
 class DiscoveryConfig(BaseModel):
     default_limit: int = Field(default=5, ge=1)
     anchoring: AnchoringConfig = Field(default_factory=AnchoringConfig)
     vector: VectorConfig = Field(default_factory=VectorConfig)
     graph_expansion: GraphExpansionConfig = Field(default_factory=GraphExpansionConfig)
+    intent_classifier: IntentClassifierConfig = Field(default_factory=IntentClassifierConfig)
 
 class IntentWeights(BaseModel):
     similarity: float = Field(..., ge=0.0, le=1.0)
@@ -90,19 +99,18 @@ class PruningConfig(BaseModel):
     min_absolute_score: float = Field(default=0.3, ge=0.0, le=1.0)
 
 class PipelineConfig(BaseModel):
-    discovery: List[str] = Field(default_factory=lambda: ["anchoring", "vector"])
+    discovery: List[str] = Field(default_factory=lambda: ["intent_classifier", "anchoring", "vector"])
     ranking: List[str] = Field(default_factory=lambda: ["intent", "graph_expansion", "scoring", "rerank", "pruning"])
     budget: List[str] = Field(default_factory=lambda: ["budget"])
 
 class RewriterConfig(BaseModel):
-    enabled: bool = Field(default=True)
     model_path: str = Field(default="models/Phi-3-mini-4k-instruct-q4.gguf")
     device: str = Field(default="cpu")
     threads: int = Field(default=2, ge=1)
     max_words: int = Field(default=50, ge=1)
 
 class MesaConfig(BaseModel):
-    enabled: bool = Field(default=True)
+    pipeline: List[str] = Field(default_factory=lambda: ["soft_prune", "consolidate", "deep_clean"])
     dry_run: bool = Field(default=False)
     interval_seconds: int = Field(default=3600, ge=60)
     centrality_threshold: int = Field(default=2, ge=0)
@@ -126,10 +134,14 @@ class MaintenanceConfig(BaseModel):
             logger.warning(f"Invalid maintenance config in YAML. Using defaults. Error: {e}")
             return cls()
 
+class RerankConfig(BaseModel):
+    model_name: str = Field(default="ms-marco-MiniLM-L-12-v2")
+
 class RetrievalConfig(BaseModel):
     discovery: DiscoveryConfig = Field(default_factory=DiscoveryConfig)
     rewriter: RewriterConfig = Field(default_factory=RewriterConfig)
     ranking: RankingConfig = Field(default_factory=RankingConfig)
+    rerank: RerankConfig = Field(default_factory=RerankConfig)
     pruning: PruningConfig = Field(default_factory=PruningConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
@@ -143,6 +155,38 @@ class RetrievalConfig(BaseModel):
         except Exception as e:
             logger.warning(f"Invalid retrieval configuration in YAML: {e}. Using defaults.")
             return cls()
+
+class IntentClassifierDiscovery(RetrievalHandler):
+    """Stage A0: Intent Classification (Zero-Shot) to guide edge filtering."""
+    def process(self, context: RetrievalContext, retriever: 'Retriever') -> None:
+        if not retriever.enrichment:
+            return
+
+        # Get the current span (already started by Retriever.search)
+        span = trace.get_current_span()
+        cfg = self.config # IntentClassifierConfig
+        labels = list(cfg.mappings.keys())
+        
+        # Use mDeBERTa from enrichment service
+        scores = retriever.enrichment._zero_shot_classify(
+            context.query_text, 
+            labels, 
+            "The user intent is {}."
+        )
+        
+        best_intent = max(scores, key=scores.get)
+        confidence = scores[best_intent]
+        
+        span.set_attribute("retrieval.intent", best_intent)
+        span.set_attribute("retrieval.intent_confidence", float(confidence))
+        
+        context.metadata["intent"] = best_intent
+        context.metadata["intent_confidence"] = confidence
+        
+        # Only filter if we are somewhat confident (threshold lowered to 0.25)
+        if confidence > 0.25:
+            context.metadata["allowed_edges"] = cfg.mappings.get(best_intent, [])
+            span.set_attribute("retrieval.allowed_edges", context.metadata["allowed_edges"])
 
 class AnchoringDiscovery(RetrievalHandler):
     """Stage A: Semantic Anchoring (Graph-First)"""
@@ -261,6 +305,10 @@ class GraphExpansionDiscovery(RetrievalHandler):
         # Sort current candidates by temporary score (or importance if scores not set yet)
         # For expansion, we look at the top seed_limit results currently in the pool
         cfg = self.config # GraphExpansionConfig
+        if not cfg:
+            logger.warning("GraphExpansionDiscovery: No configuration provided. Skipping.")
+            return
+
         seed_ids = [cid for cid, c in sorted(context.candidates.items(), key=lambda x: x[1].get("similarity", x[1]["importance"]/10.0), reverse=True)[:cfg.seed_limit]]
         
         if not seed_ids:
@@ -269,15 +317,28 @@ class GraphExpansionDiscovery(RetrievalHandler):
         # Calculate dynamic gravity
         gravity = retriever._calculate_gravity(context.query_text, list(context.candidates.values())[:5])
         
-        # Iterative expansion
-        linked_results = retriever.graph.get_related_memories(seed_ids, anchor_entities=context.anchors, gravity=gravity, depth=1)
+        # Iterative expansion with Intent-Driven Edge Filtering
+        allowed_edges = context.metadata.get("allowed_edges")
+        linked_results = retriever.graph.get_related_memories(
+            seed_ids, 
+            anchor_entities=context.anchors, 
+            gravity=gravity, 
+            depth=1,
+            allowed_edges=allowed_edges
+        )
         depth = 1
         
         count = len(linked_results)
         avg_signal = sum(linked_results.values()) / count if count > 0 else 0.0
         
         if count < cfg.seed_limit or avg_signal < cfg.min_signal:
-            linked_results = retriever.graph.get_related_memories(seed_ids, anchor_entities=context.anchors, gravity=gravity, depth=2)
+            linked_results = retriever.graph.get_related_memories(
+                seed_ids, 
+                anchor_entities=context.anchors, 
+                gravity=gravity, 
+                depth=2,
+                allowed_edges=allowed_edges
+            )
             depth = 2
             avg_signal = sum(linked_results.values()) / len(linked_results) if linked_results else 0.0
 
@@ -313,6 +374,16 @@ class IntentRanker(RetrievalHandler):
         query_lower = context.query_text.lower()
         cfg = self.config # IntentConfig
         
+        # 0. Check for model-based intent from Discovery stage
+        model_intent = context.metadata.get("intent")
+        model_confidence = context.metadata.get("intent_confidence", 0.0)
+        
+        # Logic unification: Model-based CAUSAL or PROCEDURAL intents are fact-seeking
+        is_fact_model = model_intent in [
+            "troubleshooting and root cause analysis", 
+            "step-by-step instructions and prerequisites"
+        ] and model_confidence > 0.3
+        
         # Check if weights were manually overridden in config
         manual_sw = context.config.get("similarity_weight")
         manual_iw = context.config.get("importance_weight")
@@ -321,7 +392,7 @@ class IntentRanker(RetrievalHandler):
         if manual_sw is not None and manual_iw is not None and manual_dw is not None:
             context.intent = "Manual Override"
             context.weights = {"similarity": manual_sw, "importance": manual_iw, "decay": manual_dw}
-        elif any(m in query_lower for m in cfg.fact_markers):
+        elif is_fact_model or any(m in query_lower for m in cfg.fact_markers):
             context.intent = "Fact-Seeking"
             w = cfg.weights["fact_seeking"]
             context.weights = {"similarity": w.similarity, "importance": w.importance, "decay": w.decay}
@@ -453,6 +524,7 @@ class BudgetHandler(RetrievalHandler):
 # --- Handler Registry ---
 # Maps string names to handler classes for config-driven pipelines
 HANDLER_REGISTRY = {
+    "intent_classifier": IntentClassifierDiscovery,
     "anchoring": AnchoringDiscovery,
     "rewriter": QueryRewriterHandler,
     "vector": VectorDiscovery,
@@ -481,40 +553,52 @@ class Retriever:
         
         self._setup_pipelines()
 
+    def _get_handler_config(self, name: str) -> Optional[BaseModel]:
+        """Unified mapping for handler-specific sub-configurations."""
+        cfg = self.config
+        
+        # Discovery specific
+        if name == "anchoring": return cfg.discovery.anchoring
+        if name == "vector": return cfg.discovery.vector
+        if name == "graph_expansion": return cfg.discovery.graph_expansion
+        if name == "intent_classifier": return cfg.discovery.intent_classifier
+        
+        # Ranking specific
+        if name == "intent": return cfg.ranking.intent
+        if name == "scoring": return cfg.ranking.scoring
+        
+        # Top-level components
+        if name == "rewriter": return cfg.rewriter
+        if name == "pruning": return cfg.pruning
+        if name == "budget": return cfg.budget
+        if name == "rerank": return cfg.rerank
+        
+        return None
+
     def _setup_pipelines(self):
-        """Initializes pipelines from config or defaults."""
+        """Initializes pipelines from config or defaults using unified mapping."""
         cfg = self.config
         
         # 1. Discovery
         for name in cfg.pipeline.discovery:
             if name in HANDLER_REGISTRY:
                 h_cls = HANDLER_REGISTRY[name]
-                # Inject specific sub-configs
-                h_cfg = None
-                if name == "anchoring": h_cfg = cfg.discovery.anchoring
-                elif name == "vector": h_cfg = cfg.discovery.vector
-                elif name == "graph_expansion": h_cfg = cfg.discovery.graph_expansion
-                elif name == "rewriter": h_cfg = cfg.rewriter
-                
+                h_cfg = self._get_handler_config(name)
                 self.register_handler(h_cls(config=h_cfg), "discovery")
             
         # 2. Ranking & Expansion
         for name in cfg.pipeline.ranking:
             if name in HANDLER_REGISTRY:
                 h_cls = HANDLER_REGISTRY[name]
-                # Inject specific sub-configs
-                h_cfg = None
-                if name == "intent": h_cfg = cfg.ranking.intent
-                elif name == "scoring": h_cfg = cfg.ranking.scoring
-                elif name == "pruning": h_cfg = cfg.pruning
-                
+                h_cfg = self._get_handler_config(name)
                 self.register_handler(h_cls(config=h_cfg), "ranking")
             
         # 3. Budgeting
         for name in cfg.pipeline.budget:
             if name in HANDLER_REGISTRY:
                 h_cls = HANDLER_REGISTRY[name]
-                self.register_handler(h_cls(config=cfg.budget), "budget")
+                h_cfg = self._get_handler_config(name)
+                self.register_handler(h_cls(config=h_cfg), "budget")
 
     def _setup_default_pipelines(self):
         """DEPRECATED: Use _setup_pipelines instead."""

@@ -13,7 +13,7 @@ class GraphQueryService:
     def __init__(self, db_manager):
         self.db = db_manager
 
-    def get_related_memories(self, start_memory_ids: List[int], anchor_entities: List[str] = None, gravity: float = 1.0, depth: int = 2, per_node_limit: int = 10) -> Dict[int, float]:
+    def get_related_memories(self, start_memory_ids: List[int], anchor_entities: List[str] = None, gravity: float = 1.0, depth: int = 2, per_node_limit: int = 10, allowed_edges: List[str] = None) -> Dict[int, float]:
         """
         Traverses the graph to find memories linked to the start nodes.
         Path: Memory <-> Entity <-> Entity <-> Memory
@@ -23,6 +23,9 @@ class GraphQueryService:
         with tracer.start_as_current_span("reverie.graph.traversal") as span:
             span.set_attribute("graph.start_nodes", len(start_memory_ids))
             span.set_attribute("graph.depth", depth)
+            if allowed_edges:
+                span.set_attribute("graph.allowed_edges", allowed_edges)
+
             if not start_memory_ids:
                 return {}
             
@@ -50,6 +53,14 @@ class GraphQueryService:
         # All found memories: id -> score
         found_memories = {}
         
+        # Edge Filter Clause
+        edge_filter = ""
+        edge_params = []
+        if allowed_edges:
+            placeholders = ",".join(["?"] * len(allowed_edges))
+            edge_filter = f"AND r.relation_type IN ({placeholders})"
+            edge_params = list(allowed_edges)
+
         for level in range(depth):
             if not current_layer:
                 break
@@ -85,6 +96,7 @@ class GraphQueryService:
                             r.source_id, r.source_type
                         FROM memory_relations r
                         JOIN current_layer_nodes cl ON r.source_id = cl.node_id AND r.source_type = cl.node_type
+                        WHERE 1=1 {edge_filter}
                         UNION ALL
                         -- Backward edges: current_layer is target
                         SELECT 
@@ -92,6 +104,7 @@ class GraphQueryService:
                             r.target_id as source_id, r.target_type as source_type
                         FROM memory_relations r
                         JOIN current_layer_nodes cl ON r.target_id = cl.node_id AND r.target_type = cl.node_type
+                        WHERE 1=1 {edge_filter}
                     ),
                     scored AS (
                         SELECT 
@@ -118,8 +131,8 @@ class GraphQueryService:
                     ORDER BY d_score DESC
                 """
                 
-                # Parameters: values_params, anchor_list (x1), gravity (x2), per_node_limit
-                params = values_params + anchor_list + [gravity, gravity, per_node_limit]
+                # Parameters: values_params, edge_params (x2), anchor_list (x1), gravity (x2), per_node_limit
+                params = values_params + edge_params + edge_params + anchor_list + [gravity, gravity, per_node_limit]
                 
                 with self.db.trace_query("SELECT", "memory_relations", bulk_query, tuple(params)) as span:
                     span.set_attribute("graph.batch_size", len(batch))

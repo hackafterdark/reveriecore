@@ -16,16 +16,21 @@ logger = logging.getLogger(__name__)
 class RerankerHandler(RetrievalHandler):
     """Stage D: Cross-Encoder Reranking using FlashRank"""
     
-    def __init__(self, config: Optional[Dict[str, Any]] = None, **kwargs):
-        # 1. Resolve Configuration
+    def __init__(self, config: Optional[Any] = None, **kwargs):
+        # 1. Resolve Configuration (handles both dict and Pydantic objects)
         self.config = config or load_reverie_config()
         cfg = self.config
         
-        self.model_name = cfg.get("reranking_model") or kwargs.get("model_name") or "ms-marco-MiniLM-L-12-v2"
-
-        # Defensive Check: Ensure we have strings
-        if not isinstance(self.model_name, str):
+        if hasattr(cfg, "model_name"):
+            self.model_name = cfg.model_name
+        elif isinstance(cfg, dict):
+            self.model_name = cfg.get("reranking_model") or kwargs.get("model_name") or "ms-marco-MiniLM-L-12-v2"
+        else:
             self.model_name = "ms-marco-MiniLM-L-12-v2"
+
+        # Double-check from kwargs if still default
+        if self.model_name == "ms-marco-MiniLM-L-12-v2" and kwargs.get("model_name"):
+            self.model_name = kwargs.get("model_name")
 
         self._ranker = None
 

@@ -46,9 +46,8 @@ Options for the "Discovery" phase where potential memory candidates are found.
   - `discovery_boost`: Score boost applied to memories found via graph traversal.
 
 ### Query Rewriter (`retrieval.rewriter`)
-Configures the LLM-based query expansion and rewriting layer.
+Configures the LLM-based query expansion and rewriting layer. Activated by adding `"rewriter"` to the `retrieval.pipeline`.
 
-- **`enabled`**: Toggle the rewriter on/off.
 - **`model_path`**: Path to the GGUF model file (e.g., `models/Phi-3-mini-4k-instruct-q4.gguf`).
 
 > [!IMPORTANT]
@@ -131,7 +130,7 @@ Controls the ingestion pipeline: how new interactions are processed, embedded, a
 Controls the `MesaService` background maintenance tasks.
 
 ### Mesa (`maintenance.mesa`)
-- **`enabled`**: Toggle background maintenance on/off.
+- **`pipeline`**: List of active maintenance stages. Supports `["soft_prune", "consolidate", "deep_clean"]`. To disable background maintenance completely, provide an empty list `[]`.
 - **`dry_run`**: If true, log actions without executing them (useful for debugging).
 - **`interval_seconds`**: Frequency of maintenance cycles.
 - **`centrality_threshold`**: Minimum connections a memory must have to avoid being archived.
