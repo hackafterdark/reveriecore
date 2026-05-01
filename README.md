@@ -23,7 +23,7 @@ If you are a developer looking to bridge Reverie Core into another agent runtime
 ## ✨ Why Reverie Core?
 
 * **From "RAG" to "Memory"**: Move beyond simple text retrieval. Our `MesaService` actively maintains your knowledge graph, archiving transient noise and elevating critical insights so your context window stays performant.
-* **Decoupled Intelligence**: A plug-and-play architecture where enrichment and retrieval pipelines are fully composable. Swap handlers for classification, profiling, or ranking as your agent's needs evolve.
+* **Decoupled Intelligence**: A plug-and-play architecture where enrichment and retrieval pipelines are fully composable. See our [**Pipeline Architecture Diagram**](DIAGRAM.md) for a visual breakdown. Swap handlers for classification, profiling, or ranking as your agent's needs evolve.
 * **Local-First, Graph-Powered**: Uses `sqlite-vec` for high-speed similarity search combined with **Bidirectional Graph Traversal** to bridge non-obvious relationships in your data.
 * **Production-Ready Observability**: Built-in **OpenTelemetry** instrumentation (OTLP) provides granular, trace-based insight into how your agent "thinks" and where its retrieval precision bottlenecks lie.
 * **Config-Driven Engineering**: Move away from hardcoded magic numbers. Every threshold, weight, and pipeline stage is managed via a validated `reveriecore.yaml`, allowing for precise, reproducible benchmark tuning.
@@ -105,6 +105,7 @@ For a full list of settings, see [**CONFIGURATION.md**](CONFIGURATION.md).
 
 For deep dives into the mechanics, see the [AGENT_DOCS](AGENT_DOCS) and [ADR](ADR) directories:
 
+- [**Pipeline Architecture Diagram**](DIAGRAM.md)
 - [**Full Configuration Guide**](CONFIGURATION.md)
 - [ADR 006: Pipeline Architecture](ADR/006-reverie-framework-pipeline-architecture.md)
 - [ADR 008: OpenTelemetry Integration](ADR/008-opentelemetry-integration.md)
