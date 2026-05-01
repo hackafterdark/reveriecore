@@ -15,19 +15,23 @@ retrieval:
     # Vector Search: Semantic similarity thresholds.
     vector:
       precision_gate: 0.45       # Minimum similarity score (0.0 - 1.0).
-      candidate_multiplier: 3    # Fetch (limit * multiplier) candidates for ranking.
+      candidate_multiplier: 10   # Fetch (limit * multiplier) candidates for ranking.
       fallback_threshold: 3      # If fewer than this many results found, try fallback.
       
     # Graph Expansion: Discovering non-obvious context via relationships.
     graph_expansion:
-      seed_limit: 3              # Max seeds to use for traversal.
-      min_signal: 0.6            # Minimum edge weight to follow.
-      discovery_boost: 0.5       # Score boost for memories found via graph.
+      seed_limit: 4              # Max seeds to use for traversal.
+      min_signal: 0.65           # Minimum edge weight to follow.
+      discovery_boost: 0.8       # Score boost for memories found via graph.
     
     # Intent Classifier: Guidance for retrieval intent detection.
     intent_classifier:
       intent_strategy: "binary" # Aggressive: forces binary choice (Entailment vs Contradiction).
-      confidence_threshold: 0.25 # Only apply intent-based filtering if confidence > X.
+      confidence_threshold: 0.65 # Only apply intent-based filtering if confidence > X.
+      mappings:
+        "troubleshooting and root cause analysis": ["CAUSES", "DEPENDS_ON", "SUPPORTS"]
+        "step-by-step instructions and prerequisites": ["PRECEDES", "FOLLOWS", "PREREQUISITE_FOR"]
+        "general definition and conceptual mapping": ["IS_A", "PART_OF", "DEFINES", "MENTIONS"]
 
   # Query Rewriter: LLM-driven expansion and clarification. Activated by including "rewriter" in the retrieval pipeline.
   rewriter:
@@ -49,8 +53,8 @@ retrieval:
         
     # Scoring: Final composite score calculation.
     scoring:
-      anchor_boost: 0.2           # Extra boost for high-level "Observation Anchor" nodes.
-      graph_boost_multiplier: 0.1 # Weight of graph connectivity in final score.
+      anchor_boost: 0.4           # Extra boost for high-level "Observation Anchor" nodes.
+      graph_boost_multiplier: 0.5 # Weight of graph connectivity in final score.
       default_similarities: {anchor: 0.6, other: 0.4}
       
     # Temporal Decay: Prioritizes recent memories.
@@ -61,7 +65,7 @@ retrieval:
     # Pruning Phase: Filters out noise immediately after re-ranking.
     pruning:
       top_n: 4                      # Max number of candidates allowed.
-      relative_threshold: 0.0       # Discard results < X% of the top scorer's quality.
+      relative_threshold: 0.2       # Discard results < X% of the top scorer's quality.
       min_absolute_score: 0.3       # Hard floor; discard anything below this.
 
   # Budgeting Phase: Final selection and token management.
@@ -72,10 +76,15 @@ retrieval:
       critical: 8.0               # Score cutoff for "CRITICAL" label.
       relevant: 4.0               # Score cutoff for "RELEVANT" label.
 
+
+  # Reranking: Post-processing to boost high-confidence matches.
+  rerank:
+    rerank_boost: 3.0
+
   # Pipeline Composition: Defines the active handlers and their execution order.
   pipeline:
-    discovery: ["anchoring", "vector"]
-    ranking: ["intent", "graph_expansion", "scoring", "rerank", "pruning"]
+    discovery: ["intent_classifier", "anchoring", "vector", "graph_expansion"]
+    ranking: ["intent", "scoring", "rerank", "pruning"]
     budget: ["budget"]
 
 # --- 2. System Settings & Limits ---
@@ -94,8 +103,7 @@ system:
     #   Authorization: "Bearer your-token-here"
     #   X-Custom-Header: "value"
     # resource_attributes:        # Custom attributes for the tracer resource.
-    #   environment: "production"
-    #   deployment.id: "reverie-01"
+    #   environment: "local"
     # If endpoint is not reachable, telemetry will gracefully disable to prevent noise.
 
 
@@ -134,7 +142,7 @@ enrichment:
   
   # Embedding: Vector model for semantic search.
   embedding:
-    model: "all-MiniLM-L6-v2"
+    model: "BAAI/bge-small-en-v1.5"
   
   # Summarization: Model for generating memory abstracts.
   summarization:

@@ -96,6 +96,7 @@ class QueryRewriterHandler(RetrievalHandler):
             try:
                 prompt = f"Rewrite this technical search query for optimal RAG retrieval. Output ONLY the query, no filler.\n\nQuery: {original_query}\nExpanded Query:"
                 
+                span.set_attribute("gen_ai.request.model", self.model_path)
                 output = self.generator(
                     prompt,
                     max_tokens=64,

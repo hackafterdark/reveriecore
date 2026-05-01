@@ -621,6 +621,7 @@ class EnrichmentService:
 
     def generate_embedding(self, text: str) -> List[float]:
         with tracer.start_as_current_span("reverie.enrichment.generate_embedding") as span:
+            span.set_attribute("gen_ai.request.model", self.embedding_model_name)
             try:
                 self._ensure_loaded(["embedding"])
                 return self.embedding_model.encode([text], show_progress_bar=False)[0].tolist()
@@ -644,26 +645,30 @@ class EnrichmentService:
             return (len(text) // 4) + 1
 
     def generate_semantic_profile(self, text: str) -> str:
-        cfg = self.config.profiling
-        if len(text.split()) < cfg.min_word_count: 
-            return text
-        try:
-            self._ensure_loaded(["summarizer"])
-            inputs = self.summarizer_tokenizer(text, return_tensors="pt", max_length=1024, truncation=True)
-            input_len = inputs["input_ids"].shape[1]
-            dynamic_min = max(2, min(10, input_len // 2))
-            outputs = self.summarizer.generate(
-                inputs["input_ids"], 
-                max_length=cfg.max_summary_length, 
-                min_length=dynamic_min, 
-                num_beams=cfg.summary_beams, 
-                early_stopping=True
-            )
-            summary = self.summarizer_tokenizer.decode(outputs[0], skip_special_tokens=True)
-            return summary
-        except Exception as e:
-            logger.error(f"Semantic profiling failed: {e}")
-            return text
+        with tracer.start_as_current_span("reverie.enrichment.generate_semantic_profile") as span:
+            span.set_attribute("gen_ai.request.model", self.summarization_model_name)
+            cfg = self.config.profiling
+            if len(text.split()) < cfg.min_word_count: 
+                return text
+            try:
+                self._ensure_loaded(["summarizer"])
+                inputs = self.summarizer_tokenizer(text, return_tensors="pt", max_length=1024, truncation=True)
+                input_len = inputs["input_ids"].shape[1]
+                dynamic_min = max(2, min(10, input_len // 2))
+                outputs = self.summarizer.generate(
+                    inputs["input_ids"], 
+                    max_length=cfg.max_summary_length, 
+                    min_length=dynamic_min, 
+                    num_beams=cfg.summary_beams, 
+                    early_stopping=True
+                )
+                summary = self.summarizer_tokenizer.decode(outputs[0], skip_special_tokens=True)
+                return summary
+            except Exception as e:
+                logger.error(f"Semantic profiling failed: {e}")
+                span.set_status(StatusCode.ERROR)
+                span.record_exception(e)
+                return text
 
     def synthesize_memories(self, memories: Dict[int, str], entity_name: str) -> str:
         """Uses LLM to synthesize multiple fragmented memories into one high-quality 'Observation Anchor'."""
@@ -700,36 +705,38 @@ class EnrichmentService:
 
     def _zero_shot_classify(self, text: str, labels: List[str], hypothesis_template: str = "This example is {}", strategy: Optional[str] = None) -> Dict[str, float]:
         """Manual implementation of zero-shot classification for MNLI-trained models (mDeBERTa/BART)."""
-        self._ensure_loaded(["classifier"])
-        
-        scores = {}
-        for label in labels:
-            hypothesis = hypothesis_template.format(label)
+        with tracer.start_as_current_span("reverie.enrichment.zero_shot_classify") as span:
+            span.set_attribute("gen_ai.request.model", self.classifier_model_name)
+            self._ensure_loaded(["classifier"])
             
-            # AutoTokenizer handles the specific formatting for the model
-            inputs = self.classifier_tokenizer(text, hypothesis, return_tensors="pt", truncation=True)
-            
-            with torch.no_grad():
-                logits = self.classifier_model(**inputs).logits
-            
-            # mDeBERTa/BART MNLI Label Mapping:
-            # Index 0: entailment, Index 1: neutral, Index 2: contradiction (DeBERTaV3-MNLI-XNLI)
-            # Use the softmax on entailment vs contradiction.
-            # Calculate both or use a strategy flag
-            active_strategy = strategy or self.config.classifier.intent_strategy
-            if active_strategy == "binary":
-                # Isolate entailment (0) and contradiction (2)
-                binary_logits = logits[:, [0, 2]] 
-                probs = F.softmax(binary_logits, dim=1)
-                scores[label] = probs[0, 0].item()
-            else:
-                # Standard trinary
-                # Not all NLI models handle the neutral class the same way.
-                # If mDeBERTa is swapped for a specialized BART model, the trinary softmax might actually be more accurate.
-                probs = F.softmax(logits, dim=1)
-                scores[label] = probs[0, 0].item()
-            
-        return scores
+            scores = {}
+            for label in labels:
+                hypothesis = hypothesis_template.format(label)
+                
+                # AutoTokenizer handles the specific formatting for the model
+                inputs = self.classifier_tokenizer(text, hypothesis, return_tensors="pt", truncation=True)
+                
+                with torch.no_grad():
+                    logits = self.classifier_model(**inputs).logits
+                
+                # mDeBERTa/BART MNLI Label Mapping:
+                # Index 0: entailment, Index 1: neutral, Index 2: contradiction (DeBERTaV3-MNLI-XNLI)
+                # Use the softmax on entailment vs contradiction.
+                # Calculate both or use a strategy flag
+                active_strategy = strategy or self.config.classifier.intent_strategy
+                if active_strategy == "binary":
+                    # Isolate entailment (0) and contradiction (2)
+                    binary_logits = logits[:, [0, 2]] 
+                    probs = F.softmax(binary_logits, dim=1)
+                    scores[label] = probs[0, 0].item()
+                else:
+                    # Standard trinary
+                    # Not all NLI models handle the neutral class the same way.
+                    # If mDeBERTa is swapped for a specialized BART model, the trinary softmax might actually be more accurate.
+                    probs = F.softmax(logits, dim=1)
+                    scores[label] = probs[0, 0].item()
+                
+            return scores
 
     def classify_intent(self, query: str) -> Dict[str, float]:
         """Classifies the retrieval intent using zero-shot classification."""

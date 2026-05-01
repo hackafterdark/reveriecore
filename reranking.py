@@ -98,6 +98,7 @@ class RerankerHandler(RetrievalHandler):
                 # 3. Execute Rerank using RerankRequest
                 from flashrank import RerankRequest
                 req = RerankRequest(query=context.query_text, passages=passages)
+                span.set_attribute("gen_ai.request.model", self.model_name)
                 results = ranker.rerank(req)
                 
                 latency_ms = (time.perf_counter() - start_time) * 1000
