@@ -67,16 +67,14 @@ def ingest_huggingface_dataset():
     # 3. Ingest into your ReverieCore memory
     print(f"Ingesting {len(eval_split)} samples...")
     for i, sample in enumerate(eval_split):
-        if i % 10 == 0:
-            print(f"[{i}/{len(eval_split)}] Ingesting...")
-            
         context_data = sample.get('retrieved_contexts', sample.get('context', sample.get('contexts', '')))
         if isinstance(context_data, list):
             context_data = "\n".join(context_data)
             
-        # We treat each sample's question/context pair as a document to be learned
+        # ONLY ingest the facts. Ignore the 'user_input' for ingestion.
+        # We use a system-style turn to record pure knowledge nodes.
         provider.sync_turn(
-            user_content=f"External Context: {sample.get('user_input', '')}",
+            user_content="System Ingestion: Amnesty International Fact Sheet",
             assistant_content=f"{context_data}",
             session_id=session_id
         )

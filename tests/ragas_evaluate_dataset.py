@@ -108,10 +108,11 @@ def run_evaluation():
         retrieved = provider._retriever.search(
             query_vec, 
             query_text=question, 
-            limit=3,
-            strategy="balanced"
+            limit=5,
+            strategy="balanced",
+            include_ids=False
         )
-        print(f"DEBUG: Retrieved {len(retrieved)} nodes for '{question[:30]}'")
+
         for r in retrieved:
             print(f"DEBUG: Node ID {r.get('id')} Score: {r.get('score', 0):.4f} {r.get('content', '')[:200]}")
         

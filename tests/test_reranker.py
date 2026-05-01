@@ -34,9 +34,9 @@ def test_reranker_handler_logic(mocker):
     handler.process(context, MagicMock())
     
     # 4. Verify
-    assert context.candidates[1]["score"] == 0.99
+    assert context.candidates[1]["score"] == 1.99
     assert context.candidates[1]["source"] == "reranked"
-    assert context.candidates[2]["score"] == 0.01
+    assert context.candidates[2]["score"] == 1.01
     assert context.candidates[2]["source"] == "reranked"
     
     # Verify rerank was called with correct format

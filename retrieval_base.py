@@ -20,6 +20,7 @@ class RetrievalContext:
         self.is_fresh: bool = False
         self.anchors: List[str] = []
         self.metadata: Dict[str, Any] = {}
+        self.include_ids: bool = True
 
     @property
     def remaining_budget(self) -> int:

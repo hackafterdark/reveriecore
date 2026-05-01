@@ -54,10 +54,23 @@ class ProfilingConfig:
     default_retention_days: int = 7
 
 @dataclass
+class ClassifierConfig:
+    model: str = "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"
+    intent_strategy: str = "trinary"
+
+@dataclass
+class EmbeddingConfig:
+    model: str = "all-MiniLM-L6-v2"
+
+@dataclass
+class SummarizationConfig:
+    model: str = "sshleifer/distilbart-cnn-12-6"
+
+@dataclass
 class EnrichmentConfig:
-    embedding_model: str = "all-MiniLM-L6-v2"
-    summarization_model: str = "sshleifer/distilbart-cnn-12-6"
-    classifier_model: str = "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"
+    classifier: ClassifierConfig = field(default_factory=ClassifierConfig)
+    embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
+    summarization: SummarizationConfig = field(default_factory=SummarizationConfig)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     profiling: ProfilingConfig = field(default_factory=ProfilingConfig)
     active_stages: List[str] = field(default_factory=lambda: ["heuristics", "classifier", "model_importance", "soul_importance"])
@@ -67,9 +80,35 @@ class EnrichmentConfig:
         """Deep merge factory to create typed config from raw dict."""
         e_data = data.get("enrichment", {})
         
-        # Models
-        models = e_data.get("models", {})
+        # Classifier
+        c_data = e_data.get("classifier", {})
+        c_config = ClassifierConfig(
+            model=c_data.get("model", ClassifierConfig.model),
+            intent_strategy=c_data.get("intent_strategy", ClassifierConfig.intent_strategy)
+        )
         
+        # Embedding
+        emb_data = e_data.get("embedding", {})
+        emb_config = EmbeddingConfig(
+            model=emb_data.get("model", EmbeddingConfig.model)
+        )
+        
+        # Summarization
+        sum_data = e_data.get("summarization", {})
+        sum_config = SummarizationConfig(
+            model=sum_data.get("model", SummarizationConfig.model)
+        )
+        
+        # Legacy support for flat 'models' section
+        models = e_data.get("models", {})
+        if models:
+            if "classifier" in models and "model" not in c_data:
+                c_config.model = models["classifier"]
+            if "embedding" in models and "model" not in emb_data:
+                emb_config.model = models["embedding"]
+            if "summarization" in models and "model" not in sum_data:
+                sum_config.model = models["summarization"]
+
         # Scoring
         scoring_data = e_data.get("scoring", {})
         h_data = scoring_data.get("heuristics", {})
@@ -98,9 +137,9 @@ class EnrichmentConfig:
         active_stages = pipe_data.get("active_stages", ["heuristics", "classifier", "model_importance", "soul_importance"])
 
         return cls(
-            embedding_model=models.get("embedding", cls.embedding_model),
-            summarization_model=models.get("summarization", cls.summarization_model),
-            classifier_model=models.get("classifier", cls.classifier_model),
+            classifier=c_config,
+            embedding=emb_config,
+            summarization=sum_config,
             scoring=s_config,
             profiling=p_config,
             active_stages=active_stages
@@ -412,9 +451,9 @@ class EnrichmentService:
         self.config = EnrichmentConfig.from_dict(raw_cfg)
         cfg = self.config
         
-        self.embedding_model_name = kwargs.get("embedding_model_name") or cfg.embedding_model
-        self.summarization_model_name = kwargs.get("summarization_model_name") or cfg.summarization_model
-        self.classifier_model_name = kwargs.get("classifier_model_name") or cfg.classifier_model
+        self.embedding_model_name = kwargs.get("embedding_model_name") or cfg.embedding.model
+        self.summarization_model_name = kwargs.get("summarization_model_name") or cfg.summarization.model
+        self.classifier_model_name = kwargs.get("classifier_model_name") or cfg.classifier.model
 
         # Defensive Check: Ensure we have strings, not dicts from positional mismatch
         if not isinstance(self.embedding_model_name, str):
@@ -659,7 +698,7 @@ class EnrichmentService:
                 logger.error(f"Memory synthesis failed: {e}")
                 return "\n".join(list(memories.values()))
 
-    def _zero_shot_classify(self, text: str, labels: List[str], hypothesis_template: str = "This example is {}.") -> Dict[str, float]:
+    def _zero_shot_classify(self, text: str, labels: List[str], hypothesis_template: str = "This example is {}", strategy: Optional[str] = None) -> Dict[str, float]:
         """Manual implementation of zero-shot classification for MNLI-trained models (mDeBERTa/BART)."""
         self._ensure_loaded(["classifier"])
         
@@ -675,11 +714,20 @@ class EnrichmentService:
             
             # mDeBERTa/BART MNLI Label Mapping:
             # Index 0: entailment, Index 1: neutral, Index 2: contradiction (DeBERTaV3-MNLI-XNLI)
-            # wait, actually mDeBERTa-v3-base-mnli-xnli uses:
-            # 0: entailment, 1: neutral, 2: contradiction
-            # Let's verify and use the softmax on entailment vs contradiction.
-            probs = F.softmax(logits, dim=1)
-            scores[label] = probs[0, 0].item() # Entailment is at index 0 for this model
+            # Use the softmax on entailment vs contradiction.
+            # Calculate both or use a strategy flag
+            active_strategy = strategy or self.config.classifier.intent_strategy
+            if active_strategy == "binary":
+                # Isolate entailment (0) and contradiction (2)
+                binary_logits = logits[:, [0, 2]] 
+                probs = F.softmax(binary_logits, dim=1)
+                scores[label] = probs[0, 0].item()
+            else:
+                # Standard trinary
+                # Not all NLI models handle the neutral class the same way.
+                # If mDeBERTa is swapped for a specialized BART model, the trinary softmax might actually be more accurate.
+                probs = F.softmax(logits, dim=1)
+                scores[label] = probs[0, 0].item()
             
         return scores
 

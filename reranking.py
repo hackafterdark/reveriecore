@@ -76,7 +76,7 @@ class RerankerHandler(RetrievalHandler):
         
         with tracer.start_as_current_span("reverie.retrieval.handler.RerankerHandler") as span:
             span.set_attribute("retrieval.handler", self.__class__.__name__)
-            span.set_attribute("rag.retrieval.rerank_candidate_count", len(passages))
+            span.set_attribute("retrieval.rerank_candidate_count", len(passages))
             
             # Skip if no query text (e.g. vector-only search from some tests)
             if not context.query_text:
@@ -101,15 +101,16 @@ class RerankerHandler(RetrievalHandler):
                 results = ranker.rerank(req)
                 
                 latency_ms = (time.perf_counter() - start_time) * 1000
-                span.set_attribute("rag.retrieval.rerank_latency", float(latency_ms))
+                span.set_attribute("retrieval.rerank_latency", float(latency_ms))
 
                 
                 # Update scores and source
+                boost = getattr(self.config, "rerank_boost", 1.0)
                 for r in results:
                     cid = r["id"]
                     if cid in context.candidates:
                         # Override the score with the high-precision reranker score
-                        context.candidates[cid]["score"] = r["score"]
+                        context.candidates[cid]["score"] = r["score"] + boost
                         context.candidates[cid]["source"] = "reranked"
                         
                 logger.debug(f"Reranked {len(results)} candidates in {latency_ms:.2f}ms")

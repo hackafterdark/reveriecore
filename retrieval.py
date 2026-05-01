@@ -43,6 +43,8 @@ class IntentClassifierConfig(BaseModel):
         "step-by-step instructions and prerequisites": ["PRECEDES", "FOLLOWS", "PREREQUISITE_FOR"],
         "general definition and conceptual mapping": ["IS_A", "PART_OF", "DEFINES", "MENTIONS"]
     })
+    intent_strategy: str = Field(default="binary")
+    confidence_threshold: float = Field(default=0.25, ge=0.0, le=1.0)
 
 class DiscoveryConfig(BaseModel):
     default_limit: int = Field(default=5, ge=1)
@@ -136,6 +138,7 @@ class MaintenanceConfig(BaseModel):
 
 class RerankConfig(BaseModel):
     model_name: str = Field(default="ms-marco-MiniLM-L-12-v2")
+    rerank_boost: float = Field(default=1.0, ge=0.0)
 
 class RetrievalConfig(BaseModel):
     discovery: DiscoveryConfig = Field(default_factory=DiscoveryConfig)
@@ -171,7 +174,8 @@ class IntentClassifierDiscovery(RetrievalHandler):
         scores = retriever.enrichment._zero_shot_classify(
             context.query_text, 
             labels, 
-            "The user intent is {}."
+            hypothesis_template="The user intent is {}.",
+            strategy=cfg.intent_strategy
         )
         
         best_intent = max(scores, key=scores.get)
@@ -183,8 +187,8 @@ class IntentClassifierDiscovery(RetrievalHandler):
         context.metadata["intent"] = best_intent
         context.metadata["intent_confidence"] = confidence
         
-        # Only filter if we are somewhat confident (threshold lowered to 0.25)
-        if confidence > 0.25:
+        # Only filter if we are somewhat confident (configurable threshold)
+        if confidence > cfg.confidence_threshold:
             context.metadata["allowed_edges"] = cfg.mappings.get(best_intent, [])
             span.set_attribute("retrieval.allowed_edges", context.metadata["allowed_edges"])
 
@@ -389,9 +393,15 @@ class IntentRanker(RetrievalHandler):
         manual_iw = context.config.get("importance_weight")
         manual_dw = context.config.get("decay_weight")
         
-        if manual_sw is not None and manual_iw is not None and manual_dw is not None:
+        if manual_sw is not None or manual_iw is not None or manual_dw is not None:
             context.intent = "Manual Override"
-            context.weights = {"similarity": manual_sw, "importance": manual_iw, "decay": manual_dw}
+            # Start with Exploration defaults, then override with manual values
+            base_w = cfg.weights["exploration"]
+            context.weights = {
+                "similarity": manual_sw if manual_sw is not None else base_w.similarity,
+                "importance": manual_iw if manual_iw is not None else base_w.importance,
+                "decay": manual_dw if manual_dw is not None else base_w.decay
+            }
         elif is_fact_model or any(m in query_lower for m in cfg.fact_markers):
             context.intent = "Fact-Seeking"
             w = cfg.weights["fact_seeking"]
@@ -488,15 +498,16 @@ class BudgetHandler(RetrievalHandler):
 
                 # Build Header
                 guid = c.get("guid") or f"mem_{c['id']}"
+                header_title = f"### MEMORY ID: {guid}" if context.include_ids else "### MEMORY"
                 header = (
-                    f"### MEMORY ID: {guid}\n"
+                    f"{header_title}\n"
                     f"- Timestamp: {date_str}\n"
                     f"- Category: {c['type']}\n"
                     f"- Importance: {label}\n"
                     f"- Location: {location}\n"
                     f"- Context:\n"
                 )
-                
+
                 indented_content = "  " + chosen_content.replace("\n", "\n  ")
                 display_content = header + indented_content
 
@@ -685,6 +696,7 @@ class Retriever:
                decay_weight: Optional[float] = None,
                allowed_owners: List[str] = None,
                include_archived: bool = False,
+               include_ids: bool = True,
                env: Optional[Any] = None) -> List[Dict[str, Any]]:
         """
         Composable Pipeline Orchestrator:
@@ -710,7 +722,8 @@ class Retriever:
             span.set_attribute("retrieval.query", query_text)
             span.set_attribute("agent.context.token_budget_allocated", token_budget)
             context = RetrievalContext(query_text, query_vector, limit, token_budget, config, env=env)
-            
+            context.include_ids = include_ids
+
             # 2. Discovery Phase
             for handler in self.discovery_pipeline:
                 with tracer.start_as_current_span(f"reverie.retrieval.handler.{handler.__class__.__name__}") as h_span:

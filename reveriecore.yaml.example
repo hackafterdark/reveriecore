@@ -23,6 +23,11 @@ retrieval:
       seed_limit: 3              # Max seeds to use for traversal.
       min_signal: 0.6            # Minimum edge weight to follow.
       discovery_boost: 0.5       # Score boost for memories found via graph.
+    
+    # Intent Classifier: Guidance for retrieval intent detection.
+    intent_classifier:
+      intent_strategy: "binary" # Aggressive: forces binary choice (Entailment vs Contradiction).
+      confidence_threshold: 0.25 # Only apply intent-based filtering if confidence > X.
 
   # Query Rewriter: LLM-driven expansion and clarification. Activated by including "rewriter" in the retrieval pipeline.
   rewriter:
@@ -122,11 +127,18 @@ maintenance:
 # --- 3. Ingestion & Enrichment Configuration ---
 # Controls how new memories are processed, embedded, and summarized.
 enrichment:
-  # Models: Local AI models used during ingestion.
-  models:
-    embedding: "all-MiniLM-L6-v2"
-    summarization: "sshleifer/distilbart-cnn-12-6"
-    classifier: "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"
+  # Classifier: Used for importance scoring and memory type detection.
+  classifier:
+    model: "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"
+    intent_strategy: "trinary" # Conservative: allows "Neutral" to avoid false positives during ingestion.
+  
+  # Embedding: Vector model for semantic search.
+  embedding:
+    model: "all-MiniLM-L6-v2"
+  
+  # Summarization: Model for generating memory abstracts.
+  summarization:
+    model: "sshleifer/distilbart-cnn-12-6"
   
   # Importance Scoring: Heuristic and model-driven importance detection.
   scoring:

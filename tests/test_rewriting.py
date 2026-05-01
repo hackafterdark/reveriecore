@@ -42,16 +42,18 @@ def test_rewriter_skips_long_query(mock_retriever):
     # Patch the tracer in the rewriting module
     # We patch it directly on the module object to ensure it's hit
     import reveriecore.rewriting
-    with patch.object(reveriecore.rewriting, "tracer") as mock_tracer, \
+    with patch("opentelemetry.trace.get_tracer") as mock_get_tracer, \
          patch("os.path.exists", return_value=True):
         
+        mock_tracer = MagicMock()
+        mock_get_tracer.return_value = mock_tracer
         mock_tracer.start_as_current_span.return_value.__enter__.return_value = mock_span
         
         handler.process(context, mock_retriever)
         
         # Verify skip reason
-        mock_span.set_attribute.assert_any_call("rag.retrieval.skip_reason", "query_already_detailed")
-        mock_span.set_attribute.assert_any_call("rag.retrieval.word_count", 12)
+        mock_span.set_attribute.assert_any_call("retrieval.skip_reason", "query_already_detailed")
+        mock_span.set_attribute.assert_any_call("retrieval.word_count", 12)
 
 def test_rewriter_success(mock_retriever):
     handler = QueryRewriterHandler()
@@ -71,16 +73,18 @@ def test_rewriter_success(mock_retriever):
     
     mock_span = MagicMock(name="mock_span")
     import reveriecore.rewriting
-    with patch.object(reveriecore.rewriting, "tracer") as mock_tracer, \
+    with patch("opentelemetry.trace.get_tracer") as mock_get_tracer, \
          patch("os.path.exists", return_value=True):
         
+        mock_tracer = MagicMock()
+        mock_get_tracer.return_value = mock_tracer
         mock_tracer.start_as_current_span.return_value.__enter__.return_value = mock_span
         
         handler.process(context, mock_retriever)
         
         assert context.query_text == "expand bug fix details"
-        mock_span.set_attribute.assert_any_call("rag.retrieval.word_count", 2)
-        mock_span.set_attribute.assert_any_call("rag.retrieval.is_rewritten", True)
+        mock_span.set_attribute.assert_any_call("retrieval.word_count", 2)
+        mock_span.set_attribute.assert_any_call("retrieval.is_rewritten", True)
 
 def test_rewriter_model_file_missing(mock_retriever):
     handler = QueryRewriterHandler()
@@ -93,15 +97,19 @@ def test_rewriter_model_file_missing(mock_retriever):
     
     mock_span = MagicMock(name="mock_span")
     import reveriecore.rewriting
-    with patch.object(reveriecore.rewriting, "tracer") as mock_tracer, \
+    with patch("opentelemetry.trace.get_tracer") as mock_get_tracer, \
          patch("os.path.exists", return_value=False):
         
+        mock_tracer = MagicMock()
+        mock_get_tracer.return_value = mock_tracer
+        mock_tracer = MagicMock()
+        mock_get_tracer.return_value = mock_tracer
         mock_tracer.start_as_current_span.return_value.__enter__.return_value = mock_span
         
         handler.process(context, mock_retriever)
         
         assert handler.generator is None
-        mock_span.set_attribute.assert_any_call("rag.retrieval.skip_reason", "model_file_missing")
+        mock_span.set_attribute.assert_any_call("retrieval.skip_reason", "model_file_missing")
 
 def test_rewriter_load_failed(mock_retriever):
     handler = QueryRewriterHandler()
@@ -115,15 +123,17 @@ def test_rewriter_load_failed(mock_retriever):
     mock_llama.Llama.side_effect = Exception("Load error")
     mock_span = MagicMock(name="mock_span")
     import reveriecore.rewriting
-    with patch.object(reveriecore.rewriting, "tracer") as mock_tracer, \
+    with patch("opentelemetry.trace.get_tracer") as mock_get_tracer, \
          patch("os.path.exists", return_value=True):
         
+        mock_tracer = MagicMock()
+        mock_get_tracer.return_value = mock_tracer
         mock_tracer.start_as_current_span.return_value.__enter__.return_value = mock_span
         
         handler.process(context, mock_retriever)
         
         assert handler.generator is None
-        mock_span.set_attribute.assert_any_call("rag.retrieval.skip_reason", "load_failed")
+        mock_span.set_attribute.assert_any_call("retrieval.skip_reason", "load_failed")
     mock_llama.Llama.side_effect = None
 
 def test_rewriter_disabled_in_config(mock_retriever):
@@ -138,10 +148,14 @@ def test_rewriter_disabled_in_config(mock_retriever):
     
     mock_span = MagicMock(name="mock_span")
     import reveriecore.rewriting
-    with patch.object(reveriecore.rewriting, "tracer") as mock_tracer:
+    with patch("opentelemetry.trace.get_tracer") as mock_get_tracer:
+        mock_tracer = MagicMock()
+        mock_get_tracer.return_value = mock_tracer
+        mock_tracer = MagicMock()
+        mock_get_tracer.return_value = mock_tracer
         mock_tracer.start_as_current_span.return_value.__enter__.return_value = mock_span
         
         handler.process(context, mock_retriever)
         
         assert handler.generator is None
-        mock_span.set_attribute.assert_any_call("rag.retrieval.word_count", 2)
+        mock_span.set_attribute.assert_any_call("retrieval.word_count", 2)

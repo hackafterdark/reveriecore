@@ -326,7 +326,7 @@ class ReverieMemoryProvider(MemoryProvider):
                     if len(overlap) >= 3: # Threshold: 3 shared technical/rare words
                         is_useful = True
                         break
-            span.set_attribute("rag.retrieval.is_useful", is_useful)
+            span.set_attribute("retrieval.is_useful", is_useful)
             
             try:
                 # For turn saving, we focus on the assistant's response or a composite

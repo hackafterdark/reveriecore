@@ -44,6 +44,9 @@ Options for the "Discovery" phase where potential memory candidates are found.
   - `seed_limit`: Number of top vector matches used as "seeds" for graph traversal.
   - `min_signal`: Minimum weight threshold for graph edges to be traversed.
   - `discovery_boost`: Score boost applied to memories found via graph traversal.
+- **`intent_classifier`**:
+  - `intent_strategy`: The classification logic for intent detection. Supports `binary` (aggressive) or `trinary` (conservative). Defaults to `binary` for retrieval.
+  - `confidence_threshold`: Minimum probability score required before the detected intent is used for edge filtering. Defaults to `0.25`.
 
 ### Query Rewriter (`retrieval.rewriter`)
 Configures the LLM-based query expansion and rewriting layer. Activated by adding `"rewriter"` to the `retrieval.pipeline`.
@@ -102,10 +105,16 @@ Determines the order and selection of active retrieval handlers.
 ## 3. Enrichment Configuration (`enrichment`)
 Controls the ingestion pipeline: how new interactions are processed, embedded, and summarized.
 
-### Models (`enrichment.models`)
-- **`embedding`**: SentenceTransformer model for vector generation (e.g., `all-MiniLM-L6-v2`).
-- **`summarization`**: Model for generating memory abstracts (e.g., `distilbart`).
-- **`classifier`**: Model for classifying memory types and intent.
+### Components (enrichment.classifier, etc.)
+Structured settings for the individual AI models used during ingestion.
+
+- **`classifier`**:
+  - `model`: The zero-shot classification model (e.g., `MoritzLaurer/mDeBERTa-v3-base-mnli-xnli`).
+  - `intent_strategy`: The logic for handling model output. Use `trinary` (default) for conservative ingestion to avoid false positives, or `binary` for forced-choice classification.
+- **`embedding`**:
+  - `model`: SentenceTransformer model for vector generation (e.g., `all-MiniLM-L6-v2`).
+- **`summarization`**:
+  - `model`: Model for generating memory abstracts (e.g., `sshleifer/distilbart-cnn-12-6`).
 
 ### Scoring (`enrichment.scoring`)
 - **`heuristics`**:
