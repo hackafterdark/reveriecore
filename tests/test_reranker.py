@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import MagicMock
 from reveriecore.reranking import RerankerHandler
-from reveriecore.retrieval_base import RetrievalContext
+from reveriecore.schemas import RetrievalContext
 
 def test_reranker_handler_logic(mocker):
     # 1. Setup handler and context

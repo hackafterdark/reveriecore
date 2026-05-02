@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import MagicMock
-from reveriecore.retrieval import RetrievalContext, IntentClassifierDiscovery, DiscoveryConfig, IntentClassifierConfig
-from reveriecore.retrieval_base import RetrievalHandler
+from reveriecore.retrieval import IntentClassifierDiscovery
+from reveriecore.schemas import RetrievalContext, RetrievalHandler, IntentClassifierConfig
 
 @pytest.fixture
 def mock_retriever():

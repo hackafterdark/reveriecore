@@ -18,15 +18,18 @@ class MirrorService:
     Implements Memory-as-Code for data sovereignty and disaster recovery.
     """
     
-    def __init__(self, db, enrichment, archive_root: Optional[Path] = None):
+    def __init__(self, db, enrichment, archive_root: Optional[Path] = None, config: Optional[Dict[str, Any]] = None):
         self.db = db
         self.enrichment = enrichment
         
-        if archive_root is None:
+        # Priority: archive_root arg > config['archive_root'] > default
+        if archive_root:
+            self.archive_root = archive_root
+        elif config and "archive_root" in config:
+            self.archive_root = Path(config["archive_root"])
+        else:
             # Fallback to current directory/archive if not provided
             self.archive_root = Path("reverie_archive")
-        else:
-            self.archive_root = archive_root
             
         self.archive_root.mkdir(parents=True, exist_ok=True)
         self._reembedding_queue = []

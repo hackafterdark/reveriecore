@@ -2,7 +2,7 @@ import logging
 import time
 from typing import List, Dict, Any, Optional
 from .config import load_reverie_config
-from .retrieval_base import RetrievalHandler, RetrievalContext
+from .schemas import RetrievalHandler, RetrievalContext
 try:
     from flashrank import Ranker, RerankRequest
 except ImportError:

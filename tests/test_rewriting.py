@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 mock_llama = MagicMock()
 sys.modules["llama_cpp"] = mock_llama
 
-from reveriecore.retrieval_base import RetrievalContext
+from reveriecore.schemas import RetrievalContext
 from reveriecore.rewriting import QueryRewriterHandler
 
 @pytest.fixture

@@ -3,8 +3,8 @@ import time
 from typing import Any, Optional
 from opentelemetry import trace
 from opentelemetry.trace import StatusCode
-import reveriecore.telemetry as telemetry
-from .retrieval_base import RetrievalContext, RetrievalHandler
+from . import telemetry
+from .schemas import RetrievalContext, RetrievalHandler
 
 tracer = telemetry.get_tracer(__name__)
 logger = logging.getLogger(__name__)

@@ -159,6 +159,44 @@ class DatabaseManager:
                 span.set_attribute("db.operation.batch.size", batch_size)
             yield span
 
+    def add_memory(self, **kwargs) -> int:
+        """
+        Inserts a new memory record with provided metadata.
+        Returns the new memory ID.
+        """
+        import uuid
+        
+        # Default fields
+        fields = {
+            "guid": kwargs.get("guid") or str(uuid.uuid4()),
+            "content_full": kwargs.get("content_full") or kwargs.get("content", ""),
+            "content_abstract": kwargs.get("content_abstract") or kwargs.get("profile"),
+            "token_count_full": kwargs.get("token_count_full"),
+            "token_count_abstract": kwargs.get("token_count_abstract"),
+            "author_id": kwargs.get("author_id") or "USER",
+            "owner_id": kwargs.get("owner_id") or "PERSONAL_WORKSPACE",
+            "actor_id": kwargs.get("actor_id") or "HERMES_AGENT",
+            "session_id": kwargs.get("session_id"),
+            "workspace": kwargs.get("workspace"),
+            "memory_type": kwargs.get("memory_type") or "CONVERSATION",
+            "importance_score": kwargs.get("importance_score") or kwargs.get("importance") or 1.0,
+            "metadata": kwargs.get("metadata")
+        }
+        
+        # Handle dict metadata
+        if isinstance(fields["metadata"], dict):
+            fields["metadata"] = json.dumps(fields["metadata"])
+            
+        columns = ", ".join(fields.keys())
+        placeholders = ", ".join(["?"] * len(fields))
+        query = f"INSERT INTO memories ({columns}) VALUES ({placeholders})"
+        params = tuple(fields.values())
+        
+        with self.write_lock() as cursor:
+            with self.trace_query("INSERT", "memories", query, params) as span:
+                cursor.execute(query, params)
+                return cursor.lastrowid
+
     def purge_relations(self, memory_id: int):
         """Removes all triples derived from a specific memory ID (Idempotency Safeguard)."""
         query = "DELETE FROM memory_relations WHERE evidence_memory_id = ?"
@@ -191,6 +229,20 @@ class DatabaseManager:
             logger.debug(f"Updated last_accessed_at for {len(memory_ids)} memories.")
         except Exception as e:
             logger.warning(f"Failed to update access timestamps: {e}")
+
+    def update_embedding(self, memory_id: int, embedding: list[float]):
+        """Updates or inserts the vector representation for a memory."""
+        import sqlite_vec
+        vec_blob = sqlite_vec.serialize_float32(embedding)
+        with self.write_lock() as cursor:
+            with self.trace_query("DELETE", "memories_vec", "DELETE FROM memories_vec WHERE rowid = ?", (memory_id,)) as span:
+                cursor.execute("DELETE FROM memories_vec WHERE rowid = ?", (memory_id,))
+            
+            with self.trace_query("INSERT", "memories_vec", "INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)", (memory_id, "BLOB")) as span:
+                cursor.execute(
+                    "INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)",
+                    (memory_id, vec_blob)
+                )
 
     def update_memory(self, memory_id: int, content_full: str, content_abstract: str, 
                       embedding: list[float], token_count_full: int, token_count_abstract: int,

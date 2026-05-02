@@ -1,6 +1,6 @@
 import pytest
 from reveriecore.pruning import PruningEngine, PruningHandler
-from reveriecore.retrieval_base import RetrievalContext
+from reveriecore.schemas import RetrievalContext
 
 def test_pruning_engine_top_n():
     candidates = {
