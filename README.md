@@ -56,7 +56,7 @@ Reverie Core is benchmarked against a grounded question-answering [dataset](http
 
 | Metric | Result | Interpretation |
 | :--- | :--- | :--- |
-| **Faithfulness** | **0.90** | **Reliably Grounded.** High factual alignment between retrieval context and agent response, effectively eliminating hallucination. |
+| **Faithfulness** | **0.925** | **Reliably Grounded.** High factual alignment between retrieval context and agent response, effectively eliminating hallucination. |
 | **Context Precision** | **0.70** | **High-Signal Retrieval.** The pipeline consistently surfaces relevant nodes at the top of the context window for synthesis. |
 
 > **Note on Performance:** These benchmarks represent a "Real-World Baseline" achieved with the configuration settings found in `reveriecore.yaml.example`. We intentionally avoid "benchmark hacking" with synthetic datasets, preferring to tune for grounding and low-latency performance that holds up in daily usage.
