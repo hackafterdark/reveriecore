@@ -75,6 +75,9 @@ Reverie Core is benchmarked against a grounded question-answering [dataset](http
 ## 🚀 Getting Started
 
 ### 1. Installation
+
+#### Linux / WSL
+
 Clone this repository into your Hermes plugins directory and install dependencies into the agent's virtual environment:
 
 ```bash
@@ -83,6 +86,18 @@ cd reveriecore
 VIRTUAL_ENV=~/.hermes/hermes-agent/venv uv pip install -e .
 ./run_tests.sh  # Verifies environment and initializes local models
 ```
+
+#### Windows
+
+Clone this repository into your Hermes plugins directory and install dependencies into the agent's virtual environment:
+
+```powershell
+git clone https://github.com/hackafterdark/reveriecore.git
+cd reveriecore
+uv pip install --python "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\python.exe" -e .
+```
+
+> **Note:** Replace `USERNAME` with your Windows username in the paths above. The Hermes venv is typically at `%LOCALAPPDATA%\hermes\hermes-agent\venv\`.
 
 ### 1.5. Download Query Rewriter Model (Optional)
 If you plan to use the **Query Rewriter** (highly recommended for complex queries), you must download the GGUF model manually. From the `reveriecore` root (assuming you have the Hugging Face CLI tool installed):
