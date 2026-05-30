@@ -111,10 +111,16 @@ Structured settings for the individual AI models used during ingestion.
 - **`classifier`**:
   - `model`: The zero-shot classification model (e.g., `MoritzLaurer/mDeBERTa-v3-base-mnli-xnli`).
   - `intent_strategy`: The logic for handling model output. Use `trinary` (default) for conservative ingestion to avoid false positives, or `binary` for forced-choice classification.
+  - `device`: Execution device for the model. Supports `cpu` (default), `cuda` (NVIDIA GPUs), `mps` (Apple Silicon), or `auto` (auto-detects best available device).
 - **`embedding`**:
   - `model`: SentenceTransformer model for vector generation (e.g., `all-MiniLM-L6-v2`).
+  - `device`: Execution device. Supports `cpu`, `cuda`, `mps`, or `auto` (default).
 - **`summarization`**:
   - `model`: Model for generating memory abstracts (e.g., `sshleifer/distilbart-cnn-12-6`).
+  - `device`: Execution device. Supports `cpu`, `cuda`, `mps`, or `auto` (default).
+
+> [!NOTE]
+> **Device Auto-Detection**: When `device` is set to `auto`, ReverieCore checks for CUDA availability first (NVIDIA GPUs), then MPS (Apple Silicon), and falls back to CPU if neither is available. Invalid device strings silently fall back to CPU with a warning logged.
 
 ### Scoring (`enrichment.scoring`)
 - **`heuristics`**:
