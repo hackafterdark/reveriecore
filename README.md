@@ -97,8 +97,6 @@ cd reveriecore
 uv pip install --python "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\python.exe" -e .
 ```
 
-> **Note:** Replace `USERNAME` with your Windows username in the paths above. The Hermes venv is typically at `%LOCALAPPDATA%\hermes\hermes-agent\venv\`.
-
 ### 1.5. Download Query Rewriter Model (Optional)
 If you plan to use the **Query Rewriter** (highly recommended for complex queries), you must download the GGUF model manually. From the `reveriecore` root (assuming you have the Hugging Face CLI tool installed):
 
