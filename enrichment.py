@@ -461,7 +461,7 @@ class EnrichmentService:
         self.summarization_model_name = kwargs.get("summarization_model_name") or cfg.summarization.model
         self.classifier_model_name = kwargs.get("classifier_model_name") or cfg.classifier.model
         
-        # Device config (cpu or cuda)
+        # Device config (cpu, cuda, mps, or auto)
         self.device = kwargs.get("device") or cfg.classifier.device
 
         # Defensive Check: Ensure we have strings, not dicts from positional mismatch
@@ -471,7 +471,20 @@ class EnrichmentService:
             self.summarization_model_name = "sshleifer/distilbart-cnn-12-6"
         if not isinstance(self.classifier_model_name, str):
             self.classifier_model_name = "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"
-        if self.device not in ("cpu", "cuda"):
+        
+        # Resolve device: support cpu, cuda, mps (Apple Silicon), or auto-detect
+        if self.device == "auto":
+            import torch
+            if torch.cuda.is_available():
+                self.device = "cuda"
+                logger.info("Auto-detected CUDA (NVIDIA GPU)")
+            elif torch.backends.mps.is_available():
+                self.device = "mps"
+                logger.info("Auto-detected MPS (Apple Silicon)")
+            else:
+                self.device = "cpu"
+                logger.info("No GPU detected, falling back to CPU")
+        elif self.device not in ("cpu", "cuda", "mps"):
             logger.warning(f"Invalid device '{self.device}', falling back to 'cpu'.")
             self.device = "cpu"
 

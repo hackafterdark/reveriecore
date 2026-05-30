@@ -139,17 +139,17 @@ enrichment:
   classifier:
     model: "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"
     intent_strategy: "trinary" # Conservative: allows "Neutral" to avoid false positives during ingestion.
-    device: "cpu" # "cpu" or "cuda" (requires compatible GPU)
+    device: "auto" # "cpu", "cuda" (NVIDIA), "mps" (Apple Silicon), or "auto" (detect)
   
   # Embedding: Vector model for semantic search.
   embedding:
     model: "BAAI/bge-small-en-v1.5"
-    device: "cpu" # "cpu" or "cuda" (requires compatible GPU)
+    device: "auto" # "cpu", "cuda" (NVIDIA), "mps" (Apple Silicon), or "auto" (detect)
   
   # Summarization: Model for generating memory abstracts.
   summarization:
     model: "sshleifer/distilbart-cnn-12-6"
-    device: "cpu" # "cpu" or "cuda" (requires compatible GPU)
+    device: "auto" # "cpu", "cuda" (NVIDIA), "mps" (Apple Silicon), or "auto" (detect)
   
   # Importance Scoring: Heuristic and model-driven importance detection.
   scoring:
