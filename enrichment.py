@@ -57,14 +57,17 @@ class ProfilingConfig:
 class ClassifierConfig:
     model: str = "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"
     intent_strategy: str = "trinary"
+    device: str = "cpu"
 
 @dataclass
 class EmbeddingConfig:
     model: str = "all-MiniLM-L6-v2"
+    device: str = "cpu"
 
 @dataclass
 class SummarizationConfig:
     model: str = "sshleifer/distilbart-cnn-12-6"
+    device: str = "cpu"
 
 @dataclass
 class EnrichmentConfig:
@@ -84,19 +87,22 @@ class EnrichmentConfig:
         c_data = e_data.get("classifier", {})
         c_config = ClassifierConfig(
             model=c_data.get("model", ClassifierConfig.model),
-            intent_strategy=c_data.get("intent_strategy", ClassifierConfig.intent_strategy)
+            intent_strategy=c_data.get("intent_strategy", ClassifierConfig.intent_strategy),
+            device=c_data.get("device", ClassifierConfig.device)
         )
         
         # Embedding
         emb_data = e_data.get("embedding", {})
         emb_config = EmbeddingConfig(
-            model=emb_data.get("model", EmbeddingConfig.model)
+            model=emb_data.get("model", EmbeddingConfig.model),
+            device=emb_data.get("device", EmbeddingConfig.device)
         )
         
         # Summarization
         sum_data = e_data.get("summarization", {})
         sum_config = SummarizationConfig(
-            model=sum_data.get("model", SummarizationConfig.model)
+            model=sum_data.get("model", SummarizationConfig.model),
+            device=sum_data.get("device", SummarizationConfig.device)
         )
         
         # Legacy support for flat 'models' section
@@ -454,6 +460,9 @@ class EnrichmentService:
         self.embedding_model_name = kwargs.get("embedding_model_name") or cfg.embedding.model
         self.summarization_model_name = kwargs.get("summarization_model_name") or cfg.summarization.model
         self.classifier_model_name = kwargs.get("classifier_model_name") or cfg.classifier.model
+        
+        # Device config (cpu or cuda)
+        self.device = kwargs.get("device") or cfg.classifier.device
 
         # Defensive Check: Ensure we have strings, not dicts from positional mismatch
         if not isinstance(self.embedding_model_name, str):
@@ -462,6 +471,9 @@ class EnrichmentService:
             self.summarization_model_name = "sshleifer/distilbart-cnn-12-6"
         if not isinstance(self.classifier_model_name, str):
             self.classifier_model_name = "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"
+        if self.device not in ("cpu", "cuda"):
+            logger.warning(f"Invalid device '{self.device}', falling back to 'cpu'.")
+            self.device = "cpu"
 
         # Models initialized as None (Lazy-Loading)
         self.embedding_model = None
@@ -565,24 +577,24 @@ class EnrichmentService:
         """Thread-safe eager loader for all model backends."""
         with self._init_lock:
             if self.embedding_model is None:
-                logger.info(f"Loading embedding model: {self.embedding_model_name}...")
-                self.embedding_model = SentenceTransformer(self.embedding_model_name, device="cpu")
+                logger.info(f"Loading embedding model: {self.embedding_model_name} on {self.device}...")
+                self.embedding_model = SentenceTransformer(self.embedding_model_name, device=self.device)
 
             if self.summarizer is None:
-                logger.info(f"Loading summarization model: {self.summarization_model_name}...")
+                logger.info(f"Loading summarization model: {self.summarization_model_name} on {self.device}...")
                 self.summarizer_tokenizer = AutoTokenizer.from_pretrained(self.summarization_model_name)
                 self.summarizer = AutoModelForSeq2SeqLM.from_pretrained(
                     self.summarization_model_name,
                     low_cpu_mem_usage=False
-                ).to("cpu")
+                ).to(self.device)
 
             if self.classifier_model is None:
-                logger.info(f"Loading zero-shot classifier: {self.classifier_model_name}...")
+                logger.info(f"Loading zero-shot classifier: {self.classifier_model_name} on {self.device}...")
                 self.classifier_tokenizer = AutoTokenizer.from_pretrained(self.classifier_model_name, use_fast=False)
                 self.classifier_model = AutoModelForSequenceClassification.from_pretrained(
                     self.classifier_model_name,
                     low_cpu_mem_usage=False
-                ).to("cpu")
+                ).to(self.device)
                 logger.info("mDeBERTa Classifier loaded successfully (Entailment-Logic).")
 
     def warmup(self):
